@@ -161,6 +161,13 @@
   .card .t{font:600 15px/1.4 var(--sans);margin-bottom:4px}
   .card .d{color:var(--ink2);font-size:14.5px}
   .card .n{color:var(--ink3);font-size:13px;margin-top:7px}
+  /* An in-flight card's own age. Quiet while the claim is fresh, amber and
+     bordered once it is past UNCONFIRMED_AFTER_MIN — the reader should be
+     able to see doubt without reading the words. */
+  .card .agechip{margin-left:9px;font:11px/1 var(--mono);letter-spacing:.06em;
+    color:var(--ink3);white-space:nowrap}
+  .card .agechip.stale{color:var(--amber)}
+  .card.unconfirmed{border-color:var(--amber);border-style:dashed}
 
   .ask{border-color:var(--amber);background:#22190e}
   /* An answered question stays visible so the loop is seen to close —
@@ -520,14 +527,54 @@ const ago = m => m == null ? null
   : m < 1440 ? `${Math.round(m / 60)} h ago`
   : `${Math.round(m / 1440)} d ago`
 
+// Minutes since an ISO timestamp, or null if absent/unparseable. Computed in
+// the browser on every poll, so it keeps ticking without the agent writing
+// anything — which is the entire point: see UNCONFIRMED_AFTER_MIN below.
+const minsSince = iso => {
+  if(!iso) return null
+  const t = Date.parse(iso)
+  return Number.isNaN(t) ? null : (Date.now() - t) / 60000
+}
+
+// "Running now" is the only present-tense claim on this page, and it is the
+// one thing here that is neither derived nor dated. Machine facts are re-read
+// per request so they cannot go stale; judgement is dated so the reader can
+// see it aging. A hand-typed claim that an agent *is currently working* is
+// neither — it was true when written, and nothing makes it false when the
+// agent stops. The agent only rewrites the narrative when it next speaks to
+// the owner, and agents start and stop precisely while the owner is silent,
+// so the field most likely to be wrong is refreshed on the cadence least
+// correlated with its changes.
+//
+// So it expires visually. Past this many minutes with no rewrite, the card
+// stops asserting and starts asking — the spinner becomes a question mark.
+// This does not make the claim true or false; it makes the *not knowing*
+// visible, which is the only honest thing a page can do about a fact it
+// cannot check.
+const UNCONFIRMED_AFTER_MIN = 20
+
+const inFlightLabel = list => has(list) && list.some(x => {
+  const m = minsSince(x.since)
+  return m != null && m > UNCONFIRMED_AFTER_MIN
+}) ? 'Running now — some of this is unconfirmed' : 'Running now'
+
 function cards(list, cls = ''){
   if(!has(list)) return ''
-  return list.map(x => `<div class="card ${cls}">
-    <div class="t">${x.sev ? `<span class="sev ${esc(x.sev)}"></span>` : ''}${md(x.what || x.title || '')}</div>
+  return list.map(x => {
+    // `since` on an in-flight entry is when the work was said to have started.
+    // Falls back to nothing for every other card type, which are past-tense
+    // and do not need it.
+    const m = minsSince(x.since)
+    const old = m != null && m > UNCONFIRMED_AFTER_MIN
+    const age = m == null ? ''
+      : `<span class="agechip${old ? ' stale' : ''}">${old ? 'unconfirmed for ' : 'started '}${esc(ago(m))}</span>`
+    return `<div class="card ${cls}${old ? ' unconfirmed' : ''}">
+    <div class="t">${x.sev ? `<span class="sev ${esc(x.sev)}"></span>` : ''}${md(x.what || x.title || '')}${age}</div>
     ${x.detail || x.d ? `<div class="d">${md(x.detail || x.d)}</div>` : ''}
     ${x.who ? `<div class="n">${md(x.who)}</div>` : ''}
     ${x.note ? `<div class="n">${md(x.note)}</div>` : ''}
-  </div>`).join('')
+  </div>`
+  }).join('')
 }
 
 // An option is either a plain string, or {label, recommend, why} when there is
@@ -786,7 +833,11 @@ function render(r){
     fold('Needs you — tap to copy the question and your answer',
          asks(r.decisions, r.project || 'project'), n('decisions'), { never: true }) +
     fold('To take elsewhere', handoffs(r.handoffs), n('handoffs')) +
-    fold('Running now', cards(r.inFlight), n('inFlight')) +
+    // The heading changes with the claim's age, because "Running now" is a
+    // present-tense assertion the page has no way to check. Once entries go
+    // unconfirmed the section stops asserting in its own title too — a
+    // confident header above hedged cards is still a confident page.
+    fold(inFlightLabel(r.inFlight), cards(r.inFlight), n('inFlight')) +
     fold('Held, unpushed', commits
       ? `<ul class="commits">${commits}</ul>` +
         (r.whyHeld ? `<div class="why">${md(r.whyHeld)}</div>` : '') : '', n('held')) +

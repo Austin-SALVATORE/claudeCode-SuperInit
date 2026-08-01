@@ -256,13 +256,39 @@ The machine half needs nothing. The judgement half is on you:
 - **Rewrite `narrative.json` before you reply to the owner.** Every time.
   A board that lags the conversation is worse than no board, because it
   looks authoritative.
+- **And rewrite it on every event, not only before a reply.** This is the
+  rule that gets missed, because the first one *feels* sufficient. It is
+  not, and the reason is structural: writing the board is triggered by
+  replying to the owner, and **agents start, finish and go idle precisely
+  while the owner is silent.** So the field most likely to be wrong —
+  `inFlight`, a present-tense claim — is refreshed on the cadence least
+  correlated with its changes. Every task-notification, every teammate
+  message, every spawn and every completion is a board write, *before*
+  anything else you do with it. If the owner has to ask "where are we?",
+  the board already failed; and if they have to ask twice, the fix is
+  never "be more careful."
 - **Always bump `writtenAt`.** Past 25 minutes the stamp turns amber and
   the owner can see the words are old. That is the point — never leave it
   unchanged to hide staleness.
 - **Update `checks` whenever you actually run the suite**, never from
   memory or from a teammate's report you have not reproduced.
-- Clear `inFlight` when work stops. An empty section is honest; a stale
-  "running now" is a lie with a spinner on it.
+- **Clear `inFlight` in the same action that observes the work stopped**,
+  not the next time you happen to write the file. An empty section is
+  honest; a stale "running now" is a lie with a spinner on it.
+- **Stamp every `inFlight` entry with `since`** (ISO 8601, when the work
+  actually started). The page ages each entry live in the browser: past
+  20 minutes with no rewrite the card turns amber and dashed, its label
+  changes from "started 4 min ago" to "unconfirmed for 34 min", and the
+  section heading stops saying *Running now* and says *Running now — some
+  of this is unconfirmed*.
+
+  That is deliberately not a fix for staleness; it is a fix for staleness
+  being **invisible**. The board cannot see agents, so it can never know
+  whether a claim is still true — but it can stop asserting something it
+  has no way to check. Every other field on the page is either re-derived
+  per request (cannot go stale) or dated (visibly ages). `inFlight` was
+  the only present-tense claim that was neither, which is why it was the
+  one that silently lied.
 
 The page re-fetches every 3s and again the moment the tab regains focus,
 so a teammate's commit or a rewritten narrative appears on its own.
@@ -289,7 +315,8 @@ so a teammate's commit or a rewritten narrative appears on its own.
       "A plain string is a fine option when there is nothing to add"
     ]
   }],
-  "inFlight": [{ "who": "dev · sonnet", "what": "…", "note": "…" }],
+  "inFlight": [{ "who": "dev · sonnet", "what": "…", "note": "…",
+                 "since": "2026-07-31T20:58:00+02:00" }],   // ages live
   "findings": [{ "sev": "high", "title": "…", "detail": "…" }],  // high|med|low
   "queued":   [{ "what": "…", "note": "…" }],
   "open":     [{ "what": "…", "who": "unassigned" }]

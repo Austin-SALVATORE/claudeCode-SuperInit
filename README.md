@@ -97,6 +97,30 @@ cannot fire until you speak. A watcher armed under the agent's Monitor
 tool emits each answer within seconds of the tap — fast, but it dies with
 the session.
 
+### The one field that could lie without aging
+
+Everything on the board is either **re-derived per request** (branch, SHAs,
+dirty files — cannot go stale) or **dated** (the narrative prints its own
+age, and turns amber past 25 minutes). `inFlight` — "Running now" — was
+neither, and it is the only present-tense claim on the page.
+
+It went wrong exactly as that gap predicts. Writing the board is triggered
+by replying to the owner; agents start, finish and go idle *while the owner
+is silent*. So the field most likely to be wrong was refreshed on the
+cadence least correlated with its changes, and a finished verifier sat
+there spinning until the owner asked why the board disagreed with the chat.
+
+The fix is not "remember to clear it" — that is the rule that had already
+been written and already been broken. `inFlight` entries now carry `since`,
+and the page ages each one live in the browser: past 20 minutes the card
+turns amber and dashed, its label changes from "started 4 min ago" to
+"unconfirmed for 34 min", and the section heading stops saying *Running
+now*. The board still cannot see agents and still cannot know whether the
+claim is true. It can stop asserting something it has no way to check, and
+that is the whole of the fix.
+
+### The answer path
+
 That second path was missing for a while, and the reason is the most
 useful thing in this repository. The latency was diagnosed as structural:
 a hook only fires on `UserPromptSubmit`, therefore nothing can reach the
