@@ -177,6 +177,30 @@
   @keyframes pop{0%{transform:scale(1)}45%{transform:scale(1.12)}100%{transform:scale(1)}}
   @media(prefers-reduced-motion:reduce){.opt.copied .pick{animation:none}}
 
+  /* Diverging from the recommendation is confirmed on the page, not trusted
+     to a stray tap. The recommended option is exempt: agreeing with a stated
+     analysis needs no second signal. */
+  dialog.confirm{border:1px solid var(--amber);border-radius:10px;padding:0;
+    background:var(--bg1);color:var(--ink1);max-width:min(520px,92vw);
+    box-shadow:0 18px 50px rgba(0,0,0,.45)}
+  dialog.confirm::backdrop{background:rgba(0,0,0,.55)}
+  dialog.confirm .cbody{padding:20px 22px 6px}
+  dialog.confirm .ceyebrow{font:11px/1.4 var(--mono);letter-spacing:.09em;
+    text-transform:uppercase;color:var(--amber);margin-bottom:10px}
+  dialog.confirm .cq{font-size:13px;color:var(--ink3);line-height:1.5;
+    margin-bottom:14px}
+  dialog.confirm .ca{font-size:16px;line-height:1.45;margin-bottom:12px}
+  dialog.confirm .cnote{font-size:12.5px;color:var(--ink3);line-height:1.5}
+  dialog.confirm .cbtns{display:flex;gap:10px;justify-content:flex-end;
+    padding:16px 22px 18px}
+  dialog.confirm button{font:inherit;font-size:13px;padding:9px 16px;
+    border-radius:7px;cursor:pointer;border:1px solid var(--ink3);
+    background:transparent;color:var(--ink2)}
+  dialog.confirm button.go{border-color:var(--amber);color:var(--bg0);
+    background:var(--amber);font-weight:600}
+  dialog.confirm button:focus-visible{outline:2px solid var(--amber);
+    outline-offset:2px}
+
   /* A handoff is content leaving the board for a third party — a coach, a
      colleague. Numbered because the owner will refer to items by number. */
   .ho{border-color:var(--blue)}
@@ -448,6 +472,47 @@ function cards(list, cls = ''){
 const replyText = (project, question, answer) =>
   `[${project} board] Re: ${question}\n→ ${answer}`
 
+// Confirmation gate for any option that is NOT the recommended one.
+//
+// A tap records an answer server-side the instant it lands, and the agent acts
+// on what it finds there — so a stray tap on a wrong option is indistinguishable
+// from a considered ruling. The recommended option is deliberately exempt:
+// agreeing with an analysis printed on the same screen carries its own context,
+// and gating it would add friction to the common case to guard the rare one.
+//
+// Native <dialog> so Escape, focus trapping and the backdrop are the browser's
+// job rather than ours. Resolves false on cancel, dismiss, or Escape.
+function confirmDivergence(question, answer){
+  return new Promise(resolve => {
+    const d = document.createElement('dialog')
+    d.className = 'confirm'
+    d.innerHTML = `
+      <form method="dialog">
+        <div class="cbody">
+          <div class="ceyebrow">Not the recommended option</div>
+          <div class="cq">${md(question)}</div>
+          <div class="ca">→ ${md(answer)}</div>
+          <div class="cnote">This is recorded as your ruling the moment you
+            confirm, and acted on. Nothing happens if you cancel.</div>
+        </div>
+        <div class="cbtns">
+          <button value="cancel">Cancel</button>
+          <button value="confirm" class="go">Confirm this choice</button>
+        </div>
+      </form>`
+    document.body.appendChild(d)
+    // close fires for every dismissal path, including Escape, so one listener
+    // covers cancel, confirm and dismiss without a second code path.
+    d.addEventListener('close', () => {
+      const ok = d.returnValue === 'confirm'
+      d.remove()
+      resolve(ok)
+    }, { once: true })
+    d.showModal()
+    d.querySelector('button.go').focus()
+  })
+}
+
 // The whole question, for thinking about away from the screen or forwarding
 // to someone else. Options are numbered so they can be referred to by number,
 // and the recommendation is carried across — it is part of the question.
@@ -474,7 +539,8 @@ function asks(list, project){
       // Question and answer ride as separate attributes and are joined on
       // click — a newline inside an HTML attribute does not survive reliably.
       return `<button class="opt${o.recommend ? ' rec' : ''}"
-          data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="${esc(o.label)}">
+          data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="${esc(o.label)}"
+          data-rec="${o.recommend ? '1' : '0'}">
         <span class="lab">${md(o.label)}</span>
         ${o.recommend
           ? '<span class="pick" data-copied="Copied ✓">I&rsquo;d pick this</span>'
@@ -608,6 +674,12 @@ function render(r){
 
   document.querySelectorAll('.opt').forEach(b => {
     b.onclick = async () => {
+      // Diverging from the recommendation is the expensive misread: it means
+      // the owner's reasoning differs from mine in a way I have not heard.
+      // Tapping the recommended option is agreement with an analysis already
+      // on screen, so it needs no second signal and gets none.
+      if (b.dataset.rec !== '1' && !(await confirmDivergence(b.dataset.q, b.dataset.a))) return
+
       const text = replyText(b.dataset.project, b.dataset.q, b.dataset.a)
       let ok = true
       try { await navigator.clipboard.writeText(text) } catch (e) { ok = false }
