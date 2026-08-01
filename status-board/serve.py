@@ -392,6 +392,19 @@ def make_handler(board: Board):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(HERE), **kw)
 
+        def end_headers(self):  # noqa: N802 - stdlib naming
+            # The page never re-fetches itself: the 3s poll refreshes report.json
+            # only. So without this, an open tab keeps running whatever HTML it
+            # loaded, and a fix to the page cannot reach it — the browser has a
+            # Last-Modified and no Cache-Control, so it caches heuristically and
+            # never revalidates. That shipped a confirmation dialog to a tab that
+            # went on silently recording unconfirmed answers with the old code
+            # (1 Aug 2026). The board is localhost and tiny; caching it buys
+            # nothing and costs correctness.
+            if not self.path.startswith("/report"):
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+            super().end_headers()
+
         def do_GET(self):  # noqa: N802 - stdlib naming
             if self.path.split("?")[0].rstrip("/") in ("/report.json", "/report"):
                 return self.send_report()
