@@ -266,6 +266,27 @@ Opus dev, which is the one place the model policy was trying to save
 money. If the tiers do not line up, either spawn it unnamed or pass
 `model` explicitly on the spawn.
 
+Two defaults that fall out of this, worth applying unless a dispatch
+argues otherwise:
+
+- **The dev is a named teammate with an explicit `model`.** Named,
+  because implementation is where reality contradicts the plan and you
+  need to hear about it while there is still time to change course — a
+  dev that cannot ask will resolve the contradiction silently, inside
+  the code. Explicit `model`, because naming it is exactly what strips
+  the definition's `sonnet` and promotes it to the lead's tier. Naming
+  alone gets you the conversation *and* an unintended bill.
+- **The architect can be an unnamed subagent when the lead is already
+  Opus.** Same tier either way, so nothing is lost to the fall-through,
+  and the plan is a deliverable rather than a negotiation. The saving is
+  real but it is not the model — it is that the architect's context dies
+  with it instead of sitting in the lead's window. Name it when the
+  brief has open questions you want argued rather than recorded.
+
+Neither default excuses a thin brief. **No spawn inherits the lead's
+conversation** — not a teammate, and certainly not a subagent. Whatever
+the work needs is in the brief or it is not there at all.
+
 **A definition change does not reach a teammate that is already
 running.** A teammate keeps the `tools` and `model` it was spawned
 with, for its whole life. Editing `.claude/agents/<role>.md` changes
