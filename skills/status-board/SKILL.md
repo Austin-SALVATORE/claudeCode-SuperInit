@@ -29,28 +29,35 @@ description: Report to the owner on a live local web page instead of prose. Use 
    was blocked on it; an earlier git ruling was re-asked twice for the
    same reason.)
 
-   **How much a tap authorises depends on *which* option was tapped.**
-   Match the recorded answer against the options in your `narrative.json`:
+   **Everything in `answers.json` is a deliberate ruling. Act on all of
+   it, and do not ask again.** The page already applied the asymmetry
+   before writing the file:
 
-   - **They tapped the option marked `recommend: true`** — the one the
-     page labels *I'D PICK THIS*. That is agreement with an analysis you
-     already spelled out, so **act on it.** Move it to `answered` and say
-     in your reply which tap you are acting on, so a stray click is
-     correctable in one line.
-   - **They tapped any other option, or the question had no
-     recommendation** — **confirm before acting.** State the choice back
-     in one sentence and wait. A divergence from your recommendation is
-     precisely where a misread is expensive: it means their reasoning
-     differs from yours in a way you have not heard yet, and acting on a
-     half-understood divergence compounds it.
-   - **A pasted answer is always confirmation**, whichever option it was.
-     The paste *is* the second signal.
+   - Tapping the option marked `recommend: true` — the one labelled
+     *I'D PICK THIS* — records immediately. Agreeing with an analysis
+     printed on the same screen carries its own context.
+   - Tapping **any other option** opens a confirmation modal naming the
+     question and the choice, and records nothing until it is confirmed.
+     A divergence from your recommendation is where a misread is
+     expensive, so it costs a deliberate second action.
+   - Cancelling or pressing Escape records nothing, so it never reaches
+     you at all.
 
-   The asymmetry is the point. Agreement carries the context you wrote;
-   disagreement carries context only they have. (Rule set by the owner,
-   1 Aug 2026, after I acted on an unpasted tap — correctly, as it
-   happened, but without a policy that distinguished the safe case from
-   the costly one.)
+   **So re-asking is now the failure mode, not under-asking.** An earlier
+   version of this rule told the agent to confirm a non-recommended
+   answer in chat; with the gate on the page that asks the owner the same
+   question twice, which reads as not having registered the first answer.
+   Move what you find to `answered`, and say in your reply which tap you
+   are acting on so a mistake is still correctable in one line.
+
+   (1 Aug 2026: the owner asked for a double validation and I first built
+   it as an instruction to myself. That is not a validation — it does
+   nothing about a stray tap recording a ruling nobody made, which then
+   happened within the hour and had to be reverted by hand. The lesson
+   generalises past this board: **when the owner asks for a guard, ask
+   which layer it has to live in.** A guard the agent applies protects
+   against the agent; only a guard in the mechanism protects against the
+   input.)
 4. **Is there no slot for what I am holding?** → **Add the field.** A
    missing slot is a gap in the model, never a licence to fall back to
    prose.
