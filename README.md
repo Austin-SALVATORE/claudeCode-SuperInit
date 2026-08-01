@@ -99,6 +99,21 @@ environment but never builds the team infrastructure, so spawns quietly
 become subagents instead. The scaffolded `.claude/settings.json` sets
 it; the first session after bootstrap is the one where it takes effect.
 
+## Releasing
+
+**Bump `version` in `.claude-plugin/plugin.json` with every change that
+should reach an installed copy.** `/plugin update` compares versions, not
+content: at an unchanged version it reports *"already at the latest
+version"* and pulls nothing, however many commits have landed.
+
+That failure is silent in the worst direction — the command succeeds, says
+something reassuring, and leaves the installed plugin stale. It happened
+here: 24 commits accumulated behind `0.1.0`, including a confirmation
+dialog, a hook and a security-relevant network option, none of which
+`/plugin update` would ever have delivered.
+
+So a push is not a release. The version bump is the release.
+
 ## License
 
 MIT
