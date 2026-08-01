@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/board-answers.py\""
+          }
+        ],
+        "description": "Surface newly-tapped status-board answers into context. The board records answers server-side and notifies nobody; relying on the agent to remember to read the file failed within an hour of the rule being written."
+      }
+    ]
+  }
+}
