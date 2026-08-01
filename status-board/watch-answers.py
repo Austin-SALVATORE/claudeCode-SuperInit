@@ -58,7 +58,15 @@ def slug_for(repo: Path) -> str:
 
 
 def load(path: Path):
-    """{question: at}, or None if unreadable *right now*.
+    """{question: (at, answer)}, or None if unreadable *right now*.
+
+    The answer is carried alongside the timestamp on purpose. An earlier
+    version tracked only `at` and emitted the question alone, which made
+    every notification say *that* a decision had been made without saying
+    *what* — so the agent still had to wait for the owner's next message to
+    learn the content, and the slow path it was built to replace was doing
+    all the real work. A notification that cannot be acted on is not a
+    notification, it is a reminder to go and look.
 
     Unreadable is routine, not exceptional: the server rewrites this file
     non-atomically, so a poll can land mid-write. Returning None makes the
@@ -70,7 +78,11 @@ def load(path: Path):
             data = json.load(fh)
         if not isinstance(data, dict):
             return None
-        return {q: a.get("at") for q, a in data.items() if isinstance(a, dict)}
+        return {
+            q: (a.get("at"), a.get("answer"))
+            for q, a in data.items()
+            if isinstance(a, dict)
+        }
     except (OSError, ValueError):
         return None
 
@@ -105,12 +117,19 @@ def main() -> int:
         current = load(answers_file)
         if current is None:
             continue
-        for question, at in current.items():
-            # Keyed on question -> timestamp, so re-answering the same
-            # question surfaces again instead of being suppressed as seen.
-            if seen.get(question) != at:
-                seen[question] = at
+        for question, record in current.items():
+            # Keyed on question -> (timestamp, answer), so re-answering the
+            # same question surfaces again instead of being suppressed as
+            # seen — including when the owner changes their mind and the
+            # answer text differs while the question is identical.
+            if seen.get(question) != record:
+                seen[question] = record
+                at, answer = record
+                # Both halves, on one line each, so the notification is
+                # self-sufficient. Stdout lines within 200ms batch into a
+                # single notification, so this stays one event.
                 print(f"BOARD ANSWER — {question}", flush=True)
+                print(f"  → {answer}   [{at}]", flush=True)
 
 
 if __name__ == "__main__":

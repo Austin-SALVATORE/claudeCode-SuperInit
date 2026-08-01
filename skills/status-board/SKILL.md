@@ -135,6 +135,23 @@ Read it as a dead watcher. The script also exits 1 with a `WATCHER ERROR`
 line when it cannot read the file at startup, rather than sitting there
 watching nothing.
 
+Each answer arrives as **two lines — the question and the answer**:
+
+```
+BOARD ANSWER — Which type pairing?
+  → Set the whole Chinese line in VP Display SC   [2026-08-01T15:57:34+02:00]
+```
+
+That the answer is there at all is the second bug this mechanism had. The
+first version emitted the question alone, so every notification said *that*
+a decision had been made without saying *what* — leaving the agent to wait
+for the owner's next message to learn the content, which is precisely the
+latency the watcher exists to remove. It looked like it was working:
+notifications arrived, promptly, naming the right question. **A
+notification you cannot act on is not a notification, it is a reminder to
+go and look.** Caught by the owner reading the emitted line, not by any
+check that was run on it.
+
 ### Why this exists, and the mistake it encodes
 
 The `UserPromptSubmit` hook was already in place and working. It can only
