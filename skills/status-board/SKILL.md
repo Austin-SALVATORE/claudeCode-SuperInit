@@ -22,13 +22,35 @@ description: Report to the owner on a live local web page instead of prose. Use 
    cat ~/.claude/status-board/boards/<slug>/answers.json
    ```
 
-   Read it before you ask anything and before every reply. Then move
-   what you find to `answered` with what they chose. Asking again for a
-   decision the owner already made reads as not listening — and it is,
-   just to the wrong channel. (1 Aug 2026: a visual-direction ruling sat
-   in `answers.json` for two minutes while the reply said the work was
-   blocked on it; an earlier git ruling was re-asked twice for the same
-   reason.)
+   Read it before you ask anything and before every reply. Asking again
+   for a decision the owner already made reads as not listening — and it
+   is, just to the wrong channel. (1 Aug 2026: a visual-direction ruling
+   sat in `answers.json` for two minutes while the reply said the work
+   was blocked on it; an earlier git ruling was re-asked twice for the
+   same reason.)
+
+   **How much a tap authorises depends on *which* option was tapped.**
+   Match the recorded answer against the options in your `narrative.json`:
+
+   - **They tapped the option marked `recommend: true`** — the one the
+     page labels *I'D PICK THIS*. That is agreement with an analysis you
+     already spelled out, so **act on it.** Move it to `answered` and say
+     in your reply which tap you are acting on, so a stray click is
+     correctable in one line.
+   - **They tapped any other option, or the question had no
+     recommendation** — **confirm before acting.** State the choice back
+     in one sentence and wait. A divergence from your recommendation is
+     precisely where a misread is expensive: it means their reasoning
+     differs from yours in a way you have not heard yet, and acting on a
+     half-understood divergence compounds it.
+   - **A pasted answer is always confirmation**, whichever option it was.
+     The paste *is* the second signal.
+
+   The asymmetry is the point. Agreement carries the context you wrote;
+   disagreement carries context only they have. (Rule set by the owner,
+   1 Aug 2026, after I acted on an unpasted tap — correctly, as it
+   happened, but without a policy that distinguished the safe case from
+   the costly one.)
 4. **Is there no slot for what I am holding?** → **Add the field.** A
    missing slot is a gap in the model, never a licence to fall back to
    prose.
@@ -152,6 +174,12 @@ same option. The owner asked for this explicitly. One per question — two
 recommendations is not a recommendation. If you genuinely have no
 preference, say so in `why` rather than marking nothing and staying
 silent about it.
+
+`recommend` is not decoration: it decides how much a bare tap
+authorises. A question with no recommendation means every answer to it
+needs confirming before you act, so **omitting one costs the owner a
+round trip.** Withholding a recommendation you actually hold is the
+expensive kind of politeness.
 
 Tapping an option copies **the project name, the question and the chosen
 answer** to the clipboard as two lines:
