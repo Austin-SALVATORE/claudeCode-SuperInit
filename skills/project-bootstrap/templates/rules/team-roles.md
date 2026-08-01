@@ -236,9 +236,35 @@ trigger. Two things follow, both silent:
 So: **a bench role is spawned by its `subagent_type` with no custom
 name.** The urge to name it after the task is the trap — it reads as
 helpful labelling and silently converts a memory-carrying subagent into
-a memoryless teammate on the wrong model. Name a spawn only when you
-genuinely need to address it mid-flight, which is the definition of a
-teammate.
+a memoryless teammate on the wrong model.
+
+**But that rule is about the bench, and it is routinely over-applied to
+the three roles it was never meant to cover.** Architect, dev and QA are
+*teammate* roles; `claim-verifier`, `git-op` and `repo-inventory` are
+bench. Read the warning above as "never name a bench role", not as
+"never name anything" — the second reading quietly turns every teammate
+role into a one-shot subagent, and the loss is invisible because a
+subagent still returns a perfectly good deliverable.
+
+Choose per dispatch, by what the work needs:
+
+- **Subagent (no name)** when the role owes you a *deliverable* and the
+  brief can be complete up front — a plan for well-understood work, a
+  contained implementation batch, an acceptance sweep. It runs to
+  completion and reports.
+- **Teammate (named)** when the work needs *conversation*: when the
+  brief has open questions the role should push back on, when you expect
+  to steer it mid-flight, or when it may discover something that changes
+  the plan. A subagent in that situation cannot ask, so it guesses —
+  and the guess arrives inside a finished deliverable where it is
+  hardest to spot.
+
+**Before naming one, check the lead's model**, because a named spawn
+falls through to it. A named architect under an Opus lead is fine — it
+wanted Opus anyway. A named *dev* under an Opus lead silently becomes an
+Opus dev, which is the one place the model policy was trying to save
+money. If the tiers do not line up, either spawn it unnamed or pass
+`model` explicitly on the spawn.
 
 **A definition change does not reach a teammate that is already
 running.** A teammate keeps the `tools` and `model` it was spawned
