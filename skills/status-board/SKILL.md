@@ -208,16 +208,20 @@ so a teammate's commit or a rewritten narrative appears on its own.
 
 Backticks in any string render as inline code.
 
-**`headline` is a display line, not a paragraph.** It sets at 27px in a
-constrained measure, so one clause of roughly 60 characters fills two
-lines and reads as a headline. Three sentences do not become a summary
-there — they become a wall of short wrapped lines with empty column
-beside them, and the owner has to read the whole thing to find the one
-fact that changed. Put the fact in the headline and the reasoning in
-`findings`. (1 Aug 2026: the owner reported the title "squeezed
-together" with space to its right. Two causes — the CSS measure was
-tighter than any real headline needs, *and* I had been writing
-three-sentence paragraphs into it.)
+**`headline` is a display line, not a paragraph.** It sets at 27px across
+the full content column, so one clause of roughly 60 characters fills a
+line or two and reads as a headline. Three sentences do not become a
+summary there — they become a wall of text at display size, and the owner
+has to read all of it to find the one fact that changed. Put the fact in
+the headline and the reasoning in `findings`, where there is room.
+
+(1 Aug 2026: the owner reported the title "squeezed together" with space
+to its right. Three causes, and fixing only one would have left it
+looking wrong: `max-width: 19ch` capped it at a nineteen-character
+measure; `text-wrap: balance` then *deliberately* pulled text in from the
+right to even the lines out, which is exactly the ragged effect being
+complained about; and the headlines being written into it were
+three-sentence paragraphs. Now uncapped with `text-wrap: pretty`.)
 
 **Mark a recommendation whenever you have one**, with the reason on the
 same option. The owner asked for this explicitly. One per question — two
