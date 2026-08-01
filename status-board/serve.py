@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import zlib
@@ -322,26 +323,76 @@ class Board:
         # the narrative going stale. Now the owner can read "lead moved 0.2 min
         # ago" beside "written 25 min ago" and see the gap directly.
         # (Owner's observation, 1 Aug 2026.)
-        lead_age = None
-        for t in root.glob("*.jsonl"):
+        # Which transcript is the lead's matters: a project directory holds one
+        # .jsonl per session, so "the newest file here" can be a different
+        # session entirely and would attribute someone else's activity to this
+        # board. The team config names the lead session explicitly; fall back to
+        # newest only when no team exists.
+        lead_file = None
+        for cfg in sorted((Path.home() / ".claude" / "teams").glob("*/config.json")):
             try:
-                age = (datetime.now().timestamp() - t.stat().st_mtime) / 60
-            except OSError:
+                team = json.loads(cfg.read_text())
+            except (OSError, ValueError):
                 continue
-            if age <= within_hours * 60 and (lead_age is None or age < lead_age):
-                lead_age = age
-        rows = sorted(newest.values(), key=lambda r: r["lastMin"])
-        if lead_age is not None:
-            rows.insert(
-                0,
-                {
+            if not any(
+                Path(m.get("cwd", "")) == self.repo for m in team.get("members", [])
+            ):
+                continue
+            candidate = root / f"{team.get('leadSessionId')}.jsonl"
+            if candidate.exists():
+                lead_file = candidate
+                break
+        if lead_file is None:
+            files = [t for t in root.glob("*.jsonl") if t.is_file()]
+            lead_file = max(files, key=lambda t: t.stat().st_mtime, default=None)
+
+        if lead_file is not None:
+            try:
+                age = (datetime.now().timestamp() - lead_file.stat().st_mtime) / 60
+            except OSError:
+                age = None
+            if age is not None and age <= within_hours * 60:
+                rows_lead = {
                     "who": "team-lead",
                     "kind": "lead",
-                    "model": "",
-                    "lastMin": round(lead_age, 1),
-                },
-            )
-        return rows
+                    "model": (self._lead_model(lead_file) or "inherited").replace(
+                        "claude-", ""
+                    ),
+                    "lastMin": round(age, 1),
+                }
+                return [rows_lead] + sorted(
+                    newest.values(), key=lambda r: r["lastMin"]
+                )
+        return sorted(newest.values(), key=lambda r: r["lastMin"])
+
+    _lead_model_cache: dict[str, str] = {}
+
+    def _lead_model(self, path: Path) -> str:
+        """The lead's model, read from the tail of its own transcript.
+
+        These files reach tens of megabytes, and this runs on every request, so
+        only the last 64 KB is read rather than scanning the whole thing.
+
+        Only `claude-*` values are accepted: a lead transcript also records the
+        `model` argument of every spawn it makes, so a bare "sonnet" from a
+        teammate dispatch sits in the same file and would otherwise be reported
+        as the lead's own model.
+        """
+        key = str(path)
+        if key in self._lead_model_cache:
+            return self._lead_model_cache[key]
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, 2)
+                fh.seek(max(0, fh.tell() - 65536))
+                blob = fh.read().decode("utf-8", "ignore")
+        except OSError:
+            return ""
+        found = re.findall(r'"model"\s*:\s*"(claude-[^"]{1,40})"', blob)
+        model = found[-1] if found else ""
+        if model:
+            self._lead_model_cache[key] = model
+        return model
 
     def tree_state(self) -> tuple[str, int]:
         porcelain = self.git("status", "--porcelain", default="\x00")

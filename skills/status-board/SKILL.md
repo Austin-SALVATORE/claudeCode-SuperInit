@@ -124,6 +124,31 @@ overrides the location.
 | **Machine facts** — branch, upstream SHA, unpushed commits, working tree, who moved | The server, from `git` and transcript mtimes, on **every request** | No. Nothing remembers them. |
 | **Judgement** — headline, decisions, findings, what is running | You, in `narrative.json` | **Yes.** So the board prints its own age. |
 
+**Who moved includes you.** The lead's own row sits at the top, derived
+from its session transcript's mtime exactly like every teammate's. Read
+it against the `written N ago` stamp: *"team-lead just now · written 25
+min ago"* is the board telling you it is describing a world you have
+since moved past.
+
+That row exists because every other staleness signal here measures
+somebody else — git commits, teammate activity, elapsed minutes — while
+the participant whose silence actually causes a stale narrative was the
+one participant the board could not see. (Owner's observation, 1 Aug
+2026, after a pipeline sat on `todo` through the commit that finished
+that phase.)
+
+Two things it must get right, both learned by getting them wrong:
+
+- **Resolve the lead session explicitly**, from the team config's
+  `leadSessionId`. A project directory holds one transcript per session,
+  so "newest `.jsonl` here" can be a different session entirely and will
+  cheerfully attribute someone else's activity to this board.
+- **A lead transcript records the `model` of every spawn it makes.** A
+  bare `"sonnet"` from dispatching the dev sits in the same file as the
+  lead's own model, so accept only `claude-*` values — otherwise the
+  board reports the lead as running whatever it last dispatched, which
+  looks entirely plausible and is wrong.
+
 Never type a SHA, a commit subject, a dirty-file count, or a teammate's
 model into `narrative.json`. Those are derived. Typing them creates a
 second source of truth that will disagree with git, and the board's whole
