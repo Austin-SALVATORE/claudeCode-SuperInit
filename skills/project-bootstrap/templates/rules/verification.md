@@ -80,6 +80,26 @@ and the whole team will keep reaching for it until it is written down.
   pointer propagates a false belief into every reader who follows it
   without looking.
 
+- **A version number is a claim about a specific machine, so read it
+  off that machine.** `npm view <pkg> version`, a docs page, or memory
+  tells you what is *published* — not what is installed and therefore
+  not what any result was produced with. The installed manifest is the
+  only authority:
+
+  ```sh
+  node -p "require('<pkg>/package.json').version"   # not `npm view`
+  ```
+
+  This matters most in a table headed "verified" or "installed and
+  run", where a registry lookup silently upgrades a measurement into a
+  claim about a version nothing was ever run against — and the next
+  person installs *that* version and gets different behaviour. (1 Aug
+  2026: a plan's verified-baseline table listed a lint plugin at 3.0.1,
+  the latest release; the prototype it was measured on had 1.7.0
+  installed, two majors earlier, and the manifest's `^1.7.0` could not
+  have resolved to 3.0.1. One wrong row also means the method may have
+  slipped in rows nobody checked.)
+
 - **A spawn's model and kind are checkable, so check them.** What a
   definition declares is not evidence of what a spawn got:
 

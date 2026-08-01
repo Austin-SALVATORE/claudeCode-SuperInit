@@ -283,9 +283,23 @@ argues otherwise:
   with it instead of sitting in the lead's window. Name it when the
   brief has open questions you want argued rather than recorded.
 
-Neither default excuses a thin brief. **No spawn inherits the lead's
-conversation** — not a teammate, and certainly not a subagent. Whatever
-the work needs is in the brief or it is not there at all.
+Neither default excuses a thin brief. **A spawn inherits the project,
+not the conversation.** `CLAUDE.md` and `.claude/rules/**` load for it
+exactly as they do for the lead, because it is a session in this
+project. Nothing that exists only in the lead's chat reaches it.
+
+Measured, rather than assumed (1 Aug 2026, on a subagent's own
+transcript): every distinctive term from the lead's conversation that
+was not in the brief returned **zero** hits, while terms that *were* in
+the brief returned 6–55 — so the absence is real and not a broken
+search. Meanwhile `Routing work by size`, `claim-verifier` and
+`Definition of done` all appeared without being briefed, having come
+from the rules files.
+
+That split is the whole argument for writing rules down: **the rules
+files are the transfer mechanism that reaches every spawn
+automatically, and the brief is the only channel for everything else.**
+A brief that says "the approach we agreed" is not terse, it is empty.
 
 **A definition change does not reach a teammate that is already
 running.** A teammate keeps the `tools` and `model` it was spawned
