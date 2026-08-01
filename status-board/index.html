@@ -19,16 +19,18 @@
   :focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:4px}
 
   /* ── three temperatures: verified · moving · parked ───────────── */
-  /* Three columns, three scroll regions. Each pane owns its own scrolling so
-     the rails stay put while the centre moves, and — the part that was
-     missing — the centre scrolls *itself* rather than the document. Before
-     this the page scrollbar sat against the right rail while actually driving
-     the middle column, which reads as the wrong bar controlling the wrong
-     zone. `overscroll-behavior:contain` stops a pane that has hit its end
-     from handing the gesture on to a neighbour.
-     Only applied to the full three-column layout — see the 1160px query,
-     where the centre and right stack and a shared page scroll is correct. */
-  .shell{display:grid;height:100dvh;overflow:hidden;
+  /* Three zones, three scrollbars — but the centre's belongs at the page's
+     right edge, not inside the column.
+     The rails scroll themselves (`.inner`, sticky + own overflow +
+     overscroll-contain), so a gesture over a rail moves that rail and stops
+     at its end. The centre deliberately does NOT get its own overflow: it
+     drives the document, so its bar renders at the window edge where a page
+     scrollbar belongs. Because the rails are sticky, the document scroll
+     moves only the centre — the zone behaviour the owner asked for, without
+     parking a second bar against the right rail's border.
+     (Tried the other way first: giving `.moving` its own overflow put a 15px
+     system bar exactly on the rail's edge. Correct zones, wrong furniture.) */
+  .shell{display:grid;min-height:100dvh;
     grid-template-columns:var(--wl,292px) minmax(0,1fr) var(--wr,320px);
     grid-template-areas:"verified moving parked"}
 
@@ -47,12 +49,27 @@
   body.resizing{cursor:col-resize;user-select:none}
   .inner{position:sticky;top:0;max-height:100dvh;overflow-y:auto;
     overscroll-behavior:contain;padding:22px 20px 40px}
+
+  /* Giving a pane its own overflow also gives it the browser's default
+     scrollbar — 15px of system grey, and in the centre column it lands
+     exactly on the right rail's border with no gap. Thin, muted, inset, and
+     the same on all three panes so the layout reads as one surface.
+     `scrollbar-gutter: stable` reserves the space permanently so content does
+     not shift sideways when a bar appears. */
+  .inner{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+  .inner::-webkit-scrollbar{width:11px}
+  .inner::-webkit-scrollbar-track{background:transparent}
+  .inner::-webkit-scrollbar-thumb{background:var(--line2);border-radius:99px;
+    /* a transparent border plus content-box clipping insets the thumb, so it
+       floats clear of the rail edge instead of butting against it */
+    border:3px solid transparent;background-clip:content-box}
+  .inner:hover::-webkit-scrollbar-thumb{background:var(--ink3);
+    background-clip:content-box}
   .rail-v{grid-area:verified;border-right:1px solid var(--line)}
   .rail-p{grid-area:parked;border-left:1px solid var(--line)}
   /* The centre absorbs whatever the rails give up, but stays capped: past
      ~900px the card text stops being scannable and starts being prose. */
-  .moving{grid-area:moving;overflow-y:auto;overscroll-behavior:contain;
-    padding:22px 34px 72px;max-width:900px;
+  .moving{grid-area:moving;padding:22px 34px 72px;max-width:900px;
     margin-inline:auto;width:100%;min-width:0}
 
   /* ── eyebrows ─────────────────────────────────────────────────── */
@@ -333,13 +350,9 @@
 
   /* ── collapse ─────────────────────────────────────────────────── */
   @media(max-width:1160px){
-    /* Centre and right now stack in one column. Dividing a fixed viewport
-       between them leaves both too short to read, so hand scrolling back to
-       the document here — one bar for the stack, the left rail still its own. */
-    .shell{height:auto;overflow:visible;
-      grid-template-columns:268px minmax(0,1fr);
+    .shell{grid-template-columns:268px minmax(0,1fr);
       grid-template-areas:"verified moving" "verified parked"}
-    .moving{overflow:visible;padding:22px 26px 40px}
+    .moving{padding:22px 26px 40px}
     .rail-p{border-left:0;border-top:1px solid var(--line)}
   }
   @media(max-width:820px){
