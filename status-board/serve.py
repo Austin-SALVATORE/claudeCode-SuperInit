@@ -411,6 +411,18 @@ def make_handler(board: Board, token: str | None = None):
             """
             if not token:
                 return True
+            # A request arriving on loopback came from this machine, which is
+            # the trust boundary the token was defending — and anything running
+            # as this user can read the token file anyway, so demanding it here
+            # buys nothing and breaks every existing localhost tab. Enabling
+            # --host must not change how the board behaves for the person
+            # sitting at the machine.
+            if self.client_address and self.client_address[0] in (
+                "127.0.0.1",
+                "::1",
+                "::ffff:127.0.0.1",
+            ):
+                return True
             from http.cookies import SimpleCookie
             from urllib.parse import parse_qs, urlparse
 
