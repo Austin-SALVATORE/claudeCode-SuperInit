@@ -9,7 +9,18 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/board-answers.py\""
           }
         ],
-        "description": "Surface newly-tapped status-board answers into context. The board records answers server-side and notifies nobody; relying on the agent to remember to read the file failed within an hour of the rule being written."
+        "description": "Surface newly-tapped status-board answers into context. The board records answers server-side and notifies nobody; relying on the agent to remember to read the file failed within an hour of the rule being written. Durable but slow: it can only fire when the owner sends a message, so a tap waits for their next prompt. That latency is what SessionStart's arm-watcher removes — keep both, they fail differently."
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/arm-watcher.py\""
+          }
+        ],
+        "description": "Instruct the agent to arm the answer watcher, so a tap arrives in seconds rather than on the owner's next message. Silent for projects with no board. A hook cannot call the Monitor tool, so this is a reliably-delivered instruction rather than a mechanism — weaker than board-answers.py by design, and the strongest option available for something that requires a tool call."
       }
     ]
   }

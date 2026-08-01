@@ -117,6 +117,54 @@ plugin's own directory is replaced wholesale on every update, and boards
 written there would be destroyed by an upgrade. `STATUS_BOARD_HOME`
 overrides the location.
 
+## Arm the answer watcher — once per session, before your first reply
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/status-board/watch-answers.py" "<absolute path to repo>"
+```
+
+Run it with the **Monitor** tool, `persistent: true`. Every line it prints
+becomes a notification, so an answer reaches you seconds after the owner
+taps rather than waiting for their next message. `SessionStart` already
+tells you to do this; do it, and do not arm it twice.
+
+**It prints one `WATCHER ARMED …` line immediately. If that line does not
+appear, the arm failed** — a wrong slug, a board that does not exist, an
+unreadable file. Do not read the silence that follows as a quiet board.
+Read it as a dead watcher. The script also exits 1 with a `WATCHER ERROR`
+line when it cannot read the file at startup, rather than sitting there
+watching nothing.
+
+### Why this exists, and the mistake it encodes
+
+The `UserPromptSubmit` hook was already in place and working. It can only
+fire when the owner submits a prompt, so a tap waited for their next
+message. That was diagnosed as **structural** — as a property of the
+system — and the diagnosis was wrong. It described the limit of one
+instrument and concluded it was the limit of the world. A background
+command re-invokes the agent when it exits, and a monitor delivers each
+stdout line while the agent is idle. Both existed the whole time.
+
+The tell is what makes it worth writing down: **every check run on the hook
+passed.** It was registered, the plugin hook count rose, it fired on the
+next message. Not one of those checks could have detected the actual
+problem, and their agreement read as confirmation. That is exactly the
+`verification.md` rule — *a clean result from an instrument that cannot see
+the subject is not evidence, and re-running it does not make it evidence;
+change instrument, not effort* — failed by the person who wrote it.
+
+**Keep both mechanisms.** They fail differently: the hook is durable
+(plugin config, every session) and slow; the watcher is fast and dies with
+the session that armed it. Neither is redundant while the other can be
+dead. If both report the same answer, deduplicate against what is already
+in `narrative.json` — ground truth — rather than against a flag file.
+
+And be honest about the tier: `board-answers.py` is a *mechanism*, it runs
+whether or not you remember anything. The watcher is one step weaker,
+because arming a monitor needs a tool call and a hook cannot make one. The
+`SessionStart` hook makes the instruction arrive reliably; it cannot make
+you follow it.
+
 ## The two halves — this is the whole design
 
 |  | Who writes it | Can it go stale? |

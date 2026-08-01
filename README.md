@@ -90,6 +90,24 @@ The server is read-only against your repository and binds to
 `127.0.0.1` only. It exposes repo paths, branch names and commit
 subjects; do not bind it to anything else.
 
+Answers you tap reach the agent two ways, kept deliberately redundant
+because they fail differently. A `UserPromptSubmit` hook surfaces them
+whenever you send a message — durable, since it is plugin config, but it
+cannot fire until you speak. A watcher armed under the agent's Monitor
+tool emits each answer within seconds of the tap — fast, but it dies with
+the session.
+
+That second path was missing for a while, and the reason is the most
+useful thing in this repository. The latency was diagnosed as structural:
+a hook only fires on `UserPromptSubmit`, therefore nothing can reach the
+agent between messages. The first half is true and the conclusion is
+false — a background command re-invokes the agent when it exits, and a
+monitor delivers output while it is idle. **Every check performed on the
+hook passed**: registered, hook count risen, fired on the next message.
+None of them could have detected the real problem, and their agreement
+read as confirmation. It is `verification.md`'s own rule — *change
+instrument, not effort* — broken by its author.
+
 ## Requirements
 
 Python 3 for the status board. The agent-team roles need
