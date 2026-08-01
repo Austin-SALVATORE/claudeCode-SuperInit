@@ -20,8 +20,15 @@ Per-project state lives in boards/<slug>/narrative.json. The port is derived
 from the repo path, so a given project always lands on the same URL and two
 projects never collide.
 
-Binds 127.0.0.1 only. Read-only against the repo: it runs git in reporting
-modes and never writes to the working tree.
+Binds 127.0.0.1 by default, with no auth — right for a single local reader.
+`--host 0.0.0.0` makes it reachable from a phone on the same network and
+requires a token, printed once at startup and stored in the state directory.
+The token is not real security: it travels in a URL over plaintext HTTP. It
+stops casual access from other devices on a shared network and makes the
+exposure deliberate rather than a side effect of a flag.
+
+Read-only against the repo: it runs git in reporting modes and never writes
+to the working tree.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import zlib
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -387,10 +395,44 @@ def age_days(stamp: str | None) -> float | None:
     return None if mins is None else round(mins / 1440, 2)
 
 
-def make_handler(board: Board):
+def make_handler(board: Board, token: str | None = None):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(HERE), **kw)
+
+        def authorised(self) -> bool:
+            """True when no token is configured, or the request carries it.
+
+            Accepted from ?k= on the URL or from the cookie set on first use,
+            because the page's own fetches are relative and would otherwise
+            lose the query string. Compared with compare_digest: the timing
+            leak is not a realistic threat on a LAN, but writing `==` here is
+            the kind of thing that gets copied into somewhere it matters.
+            """
+            if not token:
+                return True
+            from http.cookies import SimpleCookie
+            from urllib.parse import parse_qs, urlparse
+
+            supplied = parse_qs(urlparse(self.path).query).get("k", [None])[0]
+            if not supplied:
+                raw = self.headers.get("Cookie")
+                if raw:
+                    try:
+                        supplied = SimpleCookie(raw).get("board_k").value
+                    except Exception:
+                        supplied = None
+            import hmac
+
+            return bool(supplied) and hmac.compare_digest(supplied, token)
+
+        def deny(self):
+            body = b"Not authorised. Open the URL printed by the server, including ?k=."
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def end_headers(self):  # noqa: N802 - stdlib naming
             # The page never re-fetches itself: the 3s poll refreshes report.json
@@ -403,9 +445,21 @@ def make_handler(board: Board):
             # nothing and costs correctness.
             if not self.path.startswith("/report"):
                 self.send_header("Cache-Control", "no-store, must-revalidate")
+            if getattr(self, "_set_cookie", False):
+                self._set_cookie = False
+                self.send_header(
+                    "Set-Cookie",
+                    f"board_k={token}; Path=/; SameSite=Strict; Max-Age=604800",
+                )
             super().end_headers()
 
         def do_GET(self):  # noqa: N802 - stdlib naming
+            if not self.authorised():
+                return self.deny()
+            # Persist the token so the page's relative fetches, which carry no
+            # query string, keep working after the first load.
+            if token and "k=" in (self.path or ""):
+                self._set_cookie = True
             if self.path.split("?")[0].rstrip("/") in ("/report.json", "/report"):
                 return self.send_report()
             return super().do_GET()
@@ -413,10 +467,15 @@ def make_handler(board: Board):
         def do_POST(self):  # noqa: N802 - stdlib naming
             """The only write path in the server, and it touches one file.
 
-            Bound to 127.0.0.1 with no auth, which is fine for a single local
-            reader — but it is why the body is capped and the payload is
-            whitelisted field by field rather than merged wholesale.
+            Loopback has no auth, which is fine for a single local reader — and
+            it is why the body is capped and the payload is whitelisted field by
+            field rather than merged wholesale. Bound beyond loopback a token is
+            required, checked here as well as on GET: a write path left open
+            because only the read path was guarded is the classic version of
+            this mistake.
             """
+            if not self.authorised():
+                return self.deny()
             route = self.path.split("?")[0].rstrip("/")
             if route not in ("/backlog", "/answer"):
                 return self.send_error(404)
@@ -473,17 +532,92 @@ def make_handler(board: Board):
     return Handler
 
 
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def lan_ip() -> str:
+    """Best-effort LAN address, for printing a URL a phone can actually use.
+
+    Opens a UDP socket to a routable address; nothing is sent, but the kernel
+    picks the interface it would route through, which is the address other
+    devices on the network can reach.
+    """
+    import socket
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 1))  # TEST-NET-1: routable, never answers
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        return "<this-machine-ip>"
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Per-project status board server.")
     ap.add_argument("--repo", default=".", help="path to the project repo")
     ap.add_argument("--port", type=int, help="override the derived port")
     ap.add_argument("--name", help="display name (defaults to the directory name)")
+    ap.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "interface to bind. Defaults to loopback. Use 0.0.0.0 to reach the "
+            "board from a phone on the same network — this requires a token, "
+            "printed at startup, and the board is still plaintext HTTP."
+        ),
+    )
     args = ap.parse_args()
 
     repo = Path(args.repo).expanduser().resolve()
     board = Board(repo, args.name)
     port = args.port or port_for(repo)
 
-    print(f"{board.name} board → http://127.0.0.1:{port}")
-    print(f"  narrative: {board.narrative}")
-    ThreadingHTTPServer(("127.0.0.1", port), make_handler(board)).serve_forever()
+    # Binding beyond loopback exposes repo paths, branch names, commit subjects
+    # and every decision on the board to anything on the network, and the board
+    # has no login. A token is not real security — it is plaintext over HTTP —
+    # but it stops casual access from every other device on a shared network,
+    # and it makes the exposure a deliberate act rather than a side effect of a
+    # flag. Loopback stays tokenless: on a single-user machine it would be
+    # friction with nothing on the other side of it.
+    token = None
+    if args.host not in LOOPBACK:
+        token_file = STATE / "lan-token"
+        try:
+            token = token_file.read_text().strip()
+        except Exception:
+            token = None
+        if not token:
+            import secrets
+
+            token = secrets.token_urlsafe(16)
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(token)
+            try:
+                token_file.chmod(0o600)
+            except Exception:
+                pass
+
+    handler = make_handler(board, token)
+    shown = args.host if args.host not in LOOPBACK else "127.0.0.1"
+    # Line-buffer stdout: this process is usually backgrounded into a log, and
+    # Python block-buffers to a pipe, so the startup banner — which is the only
+    # place the URL and the LAN token appear — would sit unflushed until the
+    # buffer filled. A token you cannot read is a token you cannot use.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    if token:
+        ip = lan_ip() if args.host == "0.0.0.0" else args.host
+        print(f"{board.name} board → http://{ip}:{port}/?k={token}")
+        print("  ! bound beyond loopback. Anything on this network can reach it.")
+        print("  ! plaintext HTTP, and the token is in the URL. Do not use on")
+        print("    a network you do not control.")
+        print(f"  token stored at: {STATE / 'lan-token'}")
+    else:
+        print(f"{board.name} board → http://{shown}:{port}")
+    print(f"  narrative: {board.narrative}", flush=True)
+    ThreadingHTTPServer((args.host, port), handler).serve_forever()

@@ -259,6 +259,17 @@ Numbering is real here: the owner and the recipient will say "point 2".
   server runs `git` in reporting modes only. Task lists and mailboxes
   under `~/.claude/tasks/` and `~/.claude/teams/` are maintained by Claude
   Code — never hand-edit them.
-- **Bound to 127.0.0.1.** It exposes repo paths, branch names and commit
-  subjects; do not bind it to anything else.
+- **Bound to 127.0.0.1 by default, and that is the right default.** It
+  exposes repo paths, branch names, commit subjects and every decision on
+  the board — which on a personal project can mean genuinely private
+  content.
+
+  To read it from a phone on the same network, `--host 0.0.0.0`. That
+  path **requires a token**, generated once and printed at startup, and
+  checked on reads *and* writes. Say plainly what it is and is not: it
+  stops other devices on a shared network from wandering in, and it makes
+  the exposure a deliberate act. It is **not** security — plaintext HTTP,
+  token in the URL. Never on a network the owner does not control, and
+  never as a substitute for asking whether the board's contents should
+  leave the machine at all.
 - **`--name` is display only.** The slug and port come from the repo path.
