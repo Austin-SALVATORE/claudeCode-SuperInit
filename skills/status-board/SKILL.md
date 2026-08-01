@@ -182,7 +182,7 @@ so a teammate's commit or a rewritten narrative appears on its own.
 ```jsonc
 {
   "writtenAt": "2026-07-31T21:04:00+02:00",   // bump on every write
-  "headline": "Short. What is true right now.",
+  "headline": "Short. What is true right now. One clause, ~60 chars.",
   "checks": { "tests": "956 / 80 files", "typecheck": "clean",
               "at": "2026-07-31T20:59:30+02:00" },
   "pipeline": {                                // omit if work is not a sequence
@@ -207,6 +207,17 @@ so a teammate's commit or a rewritten narrative appears on its own.
 ```
 
 Backticks in any string render as inline code.
+
+**`headline` is a display line, not a paragraph.** It sets at 27px in a
+constrained measure, so one clause of roughly 60 characters fills two
+lines and reads as a headline. Three sentences do not become a summary
+there — they become a wall of short wrapped lines with empty column
+beside them, and the owner has to read the whole thing to find the one
+fact that changed. Put the fact in the headline and the reasoning in
+`findings`. (1 Aug 2026: the owner reported the title "squeezed
+together" with space to its right. Two causes — the CSS measure was
+tighter than any real headline needs, *and* I had been writing
+three-sentence paragraphs into it.)
 
 **Mark a recommendation whenever you have one**, with the reason on the
 same option. The owner asked for this explicitly. One per question — two
