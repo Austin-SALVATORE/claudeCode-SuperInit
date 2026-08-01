@@ -620,6 +620,39 @@ function confirmDivergence(question, answer){
   })
 }
 
+// This page appends a free-text escape hatch to every question, always. An
+// agent that also writes one into narrative.json therefore renders it twice —
+// which kept happening, because "offer a way out of my own options" is exactly
+// the instinct a careful author has. Telling the author to stop is a rule they
+// must remember on every question; dropping the duplicate here is a property
+// of the board.
+//
+// The built-in one wins, and not arbitrarily: it carries `data-other="1"`, so
+// it is the only one wired to the handler that actually opens the write-in
+// prompt. An authored copy is an inert button that records its own label as
+// the answer — so the duplicate is not merely ugly, it is the one a reader is
+// most likely to press and the one that does the wrong thing.
+// The two failure modes here are not symmetric, and that decides the rule.
+// Leaving a duplicate is visible and merely untidy. Filtering a real option is
+// SILENT — it removes a choice the owner was supposed to see, and nobody finds
+// out. So this matches narrowly and deliberately under-reaches: a bare `other`
+// prefix is not enough (an option like "Other agents should handle it" is a
+// real answer), and anything long enough to be a genuine sentence is kept.
+// A missed duplicate costs a redundant button; a false positive costs a
+// decision.
+const OTHER_PREFIXES = [
+  'somethingelse', 'noneofthese', 'noneoftheabove', 'writemyown', 'letmewrite',
+]
+const normalise = s => String(s || '').toLowerCase().replace(/[^a-z]/g, '')
+const isEscapeHatch = label => {
+  const n = normalise(label)
+  // 40 normalised characters is comfortably past "somethingelseletmewriteit"
+  // (25) and short of any real sentence an author would write.
+  return n.length <= 40 && OTHER_PREFIXES.some(p => n.startsWith(p))
+}
+const authoredOptions = q => (q.options || []).filter(raw =>
+  !isEscapeHatch(typeof raw === 'string' ? raw : (raw && raw.label) || ''))
+
 // The whole question, for thinking about away from the screen or forwarding
 // to someone else. Options are numbered so they can be referred to by number,
 // and the recommendation is carried across — it is part of the question.
@@ -628,7 +661,7 @@ const questionText = (project, q) => [
   ...(q.why ? ['', q.why] : []),
   '',
   'Options:',
-  ...(q.options || []).map((raw, i) => {
+  ...authoredOptions(q).map((raw, i) => {
     const o = typeof raw === 'string' ? { label: raw } : raw
     const mark = o.recommend ? '  ← my pick' : ''
     const why = o.recommend && o.why ? `\n   ${o.why}` : ''
@@ -641,7 +674,7 @@ function asks(list, project){
   return list.map((q, qi) => `<div class="card ask">
     <div class="t">${md(q.q)}</div>
     ${q.why ? `<div class="d">${md(q.why)}</div>` : ''}
-    <div class="opts">${(q.options || []).map(raw => {
+    <div class="opts">${authoredOptions(q).map(raw => {
       const o = typeof raw === 'string' ? { label: raw } : raw
       // Question and answer ride as separate attributes and are joined on
       // click — a newline inside an HTML attribute does not survive reliably.
@@ -661,7 +694,7 @@ function asks(list, project){
       <span class="rsn">None of these fit, or the real answer is a
         qualification rather than a choice.</span>
     </button></div>
-    <button class="copyq" data-question="${qi}">Copy the question with all ${(q.options || []).length} options</button>
+    <button class="copyq" data-question="${qi}">Copy the question with all ${authoredOptions(q).length} options</button>
   </div>`).join('')
 }
 
