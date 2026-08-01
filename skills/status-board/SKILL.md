@@ -12,8 +12,23 @@ description: Report to the owner on a live local web page instead of prose. Use 
    board. The reply points at it.
 2. **Does the narrative still match what is true?** → Rewrite it and
    bump `writtenAt`. Every time, not when it feels stale.
-3. **Did the owner just answer something?** → Move it to `answered`
-   with what they chose.
+3. **Read `answers.json` — do not wait to be told.** The page records
+   every tap server-side the instant it happens, and **nothing notifies
+   you**. Tapping also copies the answer to the owner's clipboard, but
+   pasting it is an extra step they will not always take, and from your
+   side an answered question is indistinguishable from an ignored one.
+
+   ```bash
+   cat ~/.claude/status-board/boards/<slug>/answers.json
+   ```
+
+   Read it before you ask anything and before every reply. Then move
+   what you find to `answered` with what they chose. Asking again for a
+   decision the owner already made reads as not listening — and it is,
+   just to the wrong channel. (1 Aug 2026: a visual-direction ruling sat
+   in `answers.json` for two minutes while the reply said the work was
+   blocked on it; an earlier git ruling was re-asked twice for the same
+   reason.)
 4. **Is there no slot for what I am holding?** → **Add the field.** A
    missing slot is a gap in the model, never a licence to fall back to
    prose.
@@ -159,6 +174,12 @@ When a decision is answered, move it from `decisions` to `answered`
 with `chose`, a `note` on what it means, and `when`. Do not just delete
 it — a question that silently vanishes reads as a question that was
 lost, and the owner cannot tell whether you registered the answer.
+
+**The `answered` entry is also your only record that you saw the tap.**
+Since answers arrive silently in `answers.json`, a decision still
+sitting in `decisions` after the owner answered it is the visible
+symptom of the failure in step 3 above — check there first when the
+owner says "I already told you".
 
 ## If it is structured, it goes on the board
 
