@@ -46,9 +46,14 @@ numbers rather than adjectives — `68 files, 692 passed`, not "green".
 
 ## Definition of done
 
-Works correctly · is tested · is accessible · is responsive · fits the
+Works correctly · is tested · handles its failure cases · fits the
 product vision · **and the claim that it does has been checked by
 someone other than whoever wrote it.**
+
+<!-- Add the criteria this project actually has, and delete the ones it
+     doesn't. A UI adds accessible and responsive; a library adds
+     documented and semver-correct; a service adds observable and
+     rollback-safe. A criterion nobody can check is decoration. -->
 
 ## Conventions
 

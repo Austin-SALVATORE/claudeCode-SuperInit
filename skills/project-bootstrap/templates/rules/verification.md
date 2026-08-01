@@ -10,12 +10,15 @@ Claims are verified by running commands, not by reading reports.
 | Purpose | Command | Notes |
 |---|---|---|
 | Install | _TBD_ | |
-| Typecheck | _TBD_ | |
-| Lint | _TBD_ | |
 | Test (all) | _TBD_ | |
 | Test (single file) | _TBD_ | |
-| Build | _TBD_ | |
-| Dev server | _TBD_ | |
+| Lint | _TBD_ | |
+| Typecheck | _TBD_ | delete if the language has none |
+| Build | _TBD_ | delete if nothing is built |
+| Run locally | _TBD_ | dev server, CLI entrypoint, REPL — whatever applies |
+
+Delete rows that do not exist here rather than leaving them `_TBD_`
+forever; a permanent `_TBD_` stops being a gap and becomes furniture.
 
 **Record known-broken commands here too**, next to the working one.
 A command that exits 0 without checking anything is the most expensive
@@ -64,8 +67,12 @@ and the whole team will keep reaching for it until it is written down.
   consuming any generated tree:
 
   ```sh
-  [ "$(stat -f %m out)" -lt "$(stat -f %m src)" ] && echo STALE
+  # `stat` is not portable: -f %m is BSD/macOS, -c %Y is GNU/Linux.
+  mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+  [ "$(mtime out)" -lt "$(mtime src)" ] && echo STALE
   ```
+
+  Or, with no `stat` at all: `[ src -nt out ] && echo STALE`.
 
 - **A citation is a claim.** A comment, docblock, or memory note saying
   "documented in X" is not evidence that X says it — open X.

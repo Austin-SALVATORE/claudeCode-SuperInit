@@ -10,6 +10,13 @@ Each role below is a definition, not a description — it holds whether
 the role runs as its own session or as a spawned teammate. Read your
 role, stay in it.
 
+**`src/**` below is shorthand for "wherever this project keeps its
+product code".** Plenty of ecosystems do not use a `src` directory at
+all — Go packages at the repo root, a Python package directory, `lib/`,
+`app/`, `cmd/`. Replace the path with the real one when you adapt this
+file; what matters is the boundary between product code and everything
+else, not the spelling.
+
 ## Teammate or subagent?
 
 - **Teammate** — work that needs *conversation*: steering mid-flight,

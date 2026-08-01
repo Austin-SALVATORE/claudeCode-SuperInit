@@ -39,12 +39,16 @@ working directory someone left dirty.
 
 ## What automated tests cannot reach
 
-Some invariants are unreachable from a headless test runner — what a
-screen reader actually utters, whether a layout behaves on a real
-device, timing under real network conditions. Where a check needs a
-device or a human, say so plainly and hand it to the owner with an
-ordered pass rather than approximating it and reporting a result you
-did not observe. A wrongly clean report is worse than no report: it
+Every project has invariants the suite cannot see. Which ones depends
+on what this is — what a screen reader actually utters, how a binary
+behaves against a real terminal, timing under real network conditions,
+whether a migration survives production-shaped data, what a dependent
+package sees after an upgrade.
+
+Where a check needs a device, a human, or an environment you do not
+have, say so plainly and hand it to the owner as an ordered pass
+rather than approximating it and reporting a result you did not
+observe. A wrongly clean report is worse than no report: it
 manufactures the confidence that stops anyone else from looking.
 
 ## Delegating

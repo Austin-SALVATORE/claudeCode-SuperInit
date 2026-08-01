@@ -127,16 +127,21 @@ instead. Verify a real team formed by checking that
 `~/.claude/teams/<team>/` exists — the agent panel looks identical
 either way.
 
-**Teammate vs subagent is decided by the `name` parameter on the spawn
-(verified 27 Jul, Ghostty+tmux).** A spawn with only a `description`
-becomes a headless background subagent — no pane, `members` stays at
-1, and the agent self-reports "one-off subagent, no mailbox." A spawn
-that passes a **`name`** registers as a real teammate: it joins the
-team config's `members`, gets `backend: tmux` and its own pane, and is
-addressable by that name over the mailbox. So: name it to get a paned
-teammate; omit the name to get a headless helper. Confirm with
-`tmux list-panes` (count grows) and the `members` array in
-`~/.claude/teams/<team>/config.json`.
+**Teammate vs subagent is decided by the `name` parameter on the
+spawn.** A spawn with only a `description` becomes a headless
+background subagent — `members` stays at 1 and the agent self-reports
+"one-off subagent, no mailbox." A spawn that passes a **`name`**
+registers as a real teammate: it joins the team config's `members` and
+is addressable by that name over the mailbox. So: name it to get a
+teammate; omit the name to get a headless helper.
+
+Confirm against the `members` array in
+`~/.claude/teams/<team>/config.json`, which is backend-independent.
+Whether a teammate also gets its own visible pane depends on the
+terminal backend — under tmux it does, and `tmux list-panes` will show
+the count grow, but do not treat a missing pane as evidence that the
+spawn failed. (Observed 27 Jul 2026 under Ghostty + tmux; the
+`members` behaviour is the part that generalises.)
 
 Context transfer works regardless of which you spawn: a fresh agent
 with zero history answered repo-specific trap questions correctly,

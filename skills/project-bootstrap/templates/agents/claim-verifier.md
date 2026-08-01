@@ -17,9 +17,11 @@ against the repository, and report what does not match.
    Is the work pushed?
 2. **Tests**: run the suite yourself. Compare the count to the claim.
    If failures exist, list them by name.
-3. **Typecheck** and **build**, when the claim touches types, bundling,
-   or output size — and read the reported numbers rather than the exit
-   code alone.
+3. **The project's other gates** — typecheck, lint, build, whatever
+   `verification.md` lists — when the claim touches them. Not every
+   language has all of these; run what exists and say which ones do
+   not apply rather than silently skipping them. Read the reported
+   numbers, not just the exit code.
 4. **Specific claims**: for each concrete assertion ("only two files
    read this field", "no references remain anywhere"), run the search
    that would falsify it. Absence claims need a sweep, not a
