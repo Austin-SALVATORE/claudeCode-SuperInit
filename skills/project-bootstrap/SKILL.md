@@ -87,6 +87,41 @@ Guessing either one is worse than leaving it blank: a stub says
 "unknown", while an invented build command says "verified" to every
 session that follows.
 
+### Anything you add to `templates/` must survive four ecosystems
+
+Before writing a line into `templates/`, ask whether it is still true
+for a Go service, a Python package and a Rust crate. If it is not, it
+belongs in the *project's* `.claude/rules/**`, not in the template that
+every future project inherits.
+
+**This regresses more reliably than any other rule here, because the
+ecosystem-specific version is genuinely the more useful one.** A
+concrete command teaches better than an abstract principle — it is just
+being taught to the wrong audience. So the pull toward pasting the real
+command into the template is not carelessness; it is the instinct that
+makes good documentation, pointed at the wrong file.
+
+The pattern to use instead: **state the principle in the template, and
+tell the project to record its own command in the table.** The template
+carries the reason; the project carries the syntax.
+
+Watch for these in a template diff — each is the concrete form of a
+general idea, and each has an abstract sibling that belongs there
+instead:
+
+- A package-manager invocation (`npm`, `pip`, `cargo`, `go`)
+- A file that only exists in one ecosystem (`package.json`,
+  `pyproject.toml`, `Cargo.toml`)
+- A path layout assumed universal (`src/**`, `lib/`, `cmd/`)
+- A platform-specific shell flag (`stat -f` is BSD, `stat -c` is GNU)
+- A test-runner name, a type-checker, a bundler
+- Acceptance criteria only a UI can meet (responsive, accessible)
+
+(1 Aug 2026: an audit swept exactly these out of the templates, and four
+commits later a rule about version provenance went back in carrying a
+Node one-liner as its example. The owner caught it. The sweep is not a
+one-time cleanup — it is the standard for every subsequent edit.)
+
 ## Writing rules that work
 
 - **Always-loaded rules cost context in every session.** Keep them
