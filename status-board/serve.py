@@ -351,6 +351,36 @@ class Board:
             if label in checks:
                 state[label] = checks[label]
 
+        # Staleness the board can prove, rather than trusting whoever writes it.
+        #
+        # The narrative is judgement and can rot; git is re-derived every
+        # request and cannot. When a commit lands *after* the last narrative
+        # rewrite, the words on this page describe a repository that has since
+        # moved — and the page was already displaying the new SHA beside them.
+        # It had both halves and never compared them. (1 Aug 2026: a pipeline
+        # read "Phase 0 — todo" next to `local: e2db646`, the commit that
+        # finished Phase 0. The owner spotted it; nothing on the page did.)
+        #
+        # Reported as a fact, not a warning: how many commits landed since, and
+        # the newest subject. Whether that matters is judgement, and judgement
+        # is the half that can be wrong.
+        stale = None
+        head_iso = self.git("log", "-1", "--format=%cI")
+        written = str(narrative.get("writtenAt") or "")
+        if head_iso and written:
+            try:
+                if datetime.fromisoformat(head_iso) > datetime.fromisoformat(written):
+                    since = self.git(
+                        "log", "--format=%h\x1f%s", f'--since={written}'
+                    ).splitlines()
+                    stale = {
+                        "commitsSince": len([r for r in since if r.strip()]),
+                        "newest": (since[0].split("\x1f", 1)[-1] if since else ""),
+                        "at": head_iso,
+                    }
+            except ValueError:
+                stale = None
+
         pending, answered = self.split_decisions(narrative)
 
         out = dict(narrative)
@@ -370,6 +400,7 @@ class Board:
                     "narrativeAgeMin": age_minutes(narrative.get("writtenAt")),
                     "checksAgeMin": age_minutes(checks.get("at")),
                     "dirtyFiles": dirty,
+                    "commitsSinceNarrative": stale,
                 },
             }
         )

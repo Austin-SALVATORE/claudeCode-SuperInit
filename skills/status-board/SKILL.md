@@ -123,6 +123,32 @@ model into `narrative.json`. Those are derived. Typing them creates a
 second source of truth that will disagree with git, and the board's whole
 value is that it does not do that.
 
+**The same trap exists *inside* the narrative, between fields you write
+yourself.** `pipeline[].status` and `inFlight` encode one fact — what is
+being worked on right now — in two places. Rewriting one and not the
+other is the easiest mistake on this page, because you update the field
+you happen to be thinking about and the other keeps asserting something
+that was true an hour ago.
+
+So treat them as a single edit: **when a phase starts, it becomes
+`running` *and* appears in `inFlight`; when it is accepted, it becomes
+`shipped` *and* leaves `inFlight`.** Never one without the other. Same
+for `decisions` and `answered` — a decision moved out of one belongs in
+the other in the same write.
+
+(1 Aug 2026: `inFlight` correctly said the dev was building Phase 0
+while `pipeline` still read `todo`, and it stayed that way through the
+commit. The board displayed the new SHA a few lines above a pipeline
+claiming nothing had started. The owner noticed; the page did not — it
+now does, see the drift note below.)
+
+**The board now proves this kind of staleness rather than trusting you.**
+When a commit lands after the last `writtenAt`, the stamp says how many
+commits arrived since these words and names the newest. Elapsed minutes
+never caught it, because a narrative written two minutes ago is wrong the
+instant a teammate commits. If you see that note, rewrite before replying
+— it is the page telling you it is describing a repository that has moved.
+
 Test counts are the exception: real measurements, too slow to run per
 request. Cache them under `checks` **with the timestamp of the run**, and
 the board shows how old they are.

@@ -669,10 +669,21 @@ function renderClocks(r){
   const written = ago(f.narrativeAgeMin)
   const measured = ago(f.checksAgeMin)
   const stale = c => (f.narrativeAgeMin ?? 0) > 25 ? `<span class="stale">${c}</span>` : c
+
+  // Age is a hint; this is proof. Commits landing after the last narrative
+  // rewrite mean the words below describe a repo that has since moved — and
+  // the page is already showing that newer SHA a few lines up. Elapsed minutes
+  // never caught this, because a narrative written two minutes ago can be
+  // wrong the moment a teammate commits.
+  const moved = f.commitsSinceNarrative
+  const drift = moved && moved.commitsSince > 0
+    ? `<span class="stale">· ${moved.commitsSince} commit${moved.commitsSince === 1 ? '' : 's'} since these words${moved.newest ? `: ${esc(moved.newest)}` : ''}</span>`
+    : ''
+
   document.getElementById('stamp').innerHTML =
     (written ? stale(`written ${esc(written)}`) : 'written —') +
     (measured ? `<i>·</i>suite measured ${esc(measured)}` : '') +
-    '<i>·</i>git read live'
+    '<i>·</i>git read live' + drift
 
   // Who moved, and when — from transcript mtimes, so an agent that goes quiet
   // without reporting still shows up honestly as "quiet for 40 min".
