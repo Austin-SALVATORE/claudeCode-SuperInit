@@ -202,6 +202,19 @@
     border-left:3px solid var(--amber)}
   dialog.confirm .cnote{display:block;font-size:12.5px;color:var(--ink3);
     line-height:1.55;margin:0}
+  dialog.confirm .cinput{display:block;width:100%;box-sizing:border-box;
+    font:inherit;font-size:15px;line-height:1.5;color:var(--ink);
+    background:var(--raised);border:1px solid var(--line2);border-radius:8px;
+    padding:11px 13px;margin:0 0 14px;resize:vertical;min-height:88px}
+  dialog.confirm .cinput::placeholder{color:var(--ink3)}
+  dialog.confirm .cinput:focus{outline:2px solid var(--amber);outline-offset:1px;
+    border-color:var(--amber)}
+  dialog.confirm button[disabled]{opacity:.45;cursor:not-allowed}
+  dialog.confirm button.go[disabled]:hover{filter:none}
+  /* The free-text entry is a peer of the options, not a lesser link — it is
+     the only path that does not force the owner into the agent's framing. */
+  .opt.other{border-style:dashed}
+  .opt.other .lab{color:var(--ink2)}
   dialog.confirm .cbtns{display:flex;gap:10px;justify-content:flex-end;
     align-items:center;padding:20px 24px 20px;margin:0}
   dialog.confirm button{font:inherit;font-size:13.5px;line-height:1;
@@ -509,6 +522,45 @@ const replyText = (project, question, answer) =>
 //
 // Native <dialog> so Escape, focus trapping and the backdrop are the browser's
 // job rather than ours. Resolves false on cancel, dismiss, or Escape.
+// Free-text answer. Every question gets one, because the options are the
+// agent's framing of the problem and the owner's answer is not obliged to fit
+// it — the real answer is often a qualification ("yes, but only for X") that no
+// option anticipated. Without this the board quietly converts "none of these"
+// into whichever option was closest, which is worse than no answer.
+function promptOther(question){
+  return new Promise(resolve => {
+    const d = document.createElement('dialog')
+    d.className = 'confirm'
+    d.innerHTML = `
+      <form method="dialog">
+        <div class="cbody">
+          <div class="ceyebrow">Your own answer</div>
+          <div class="cq">${md(question)}</div>
+          <textarea class="cinput" rows="4" placeholder="Write it in your own words — a qualification, a different option, or a question back."></textarea>
+          <div class="cnote">Recorded as your ruling exactly as written.
+            Nothing happens if you cancel.</div>
+        </div>
+        <div class="cbtns">
+          <button value="cancel">Cancel</button>
+          <button value="confirm" class="go">Record this answer</button>
+        </div>
+      </form>`
+    const ta = d.querySelector('textarea')
+    const go = d.querySelector('button.go')
+    // An empty answer is not an answer; keep the button inert until there is text.
+    const sync = () => { go.disabled = !ta.value.trim() }
+    ta.addEventListener('input', sync); sync()
+    d.addEventListener('close', () => {
+      const text = ta.value.trim()
+      d.remove()
+      resolve(d.returnValue === 'confirm' && text ? text : null)
+    }, { once: true })
+    document.body.appendChild(d)
+    d.showModal()
+    ta.focus()
+  })
+}
+
 function confirmDivergence(question, answer){
   return new Promise(resolve => {
     const d = document.createElement('dialog')
@@ -574,7 +626,13 @@ function asks(list, project){
           : '<span></span>'}
         ${o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
       </button>`
-    }).join('')}</div>
+    }).join('')}<button class="opt other" data-rec="0" data-other="1"
+        data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="">
+      <span class="lab">Something else — let me write it</span>
+      <span></span>
+      <span class="rsn">None of these fit, or the real answer is a
+        qualification rather than a choice.</span>
+    </button></div>
     <button class="copyq" data-question="${qi}">Copy the question with all ${(q.options || []).length} options</button>
   </div>`).join('')
 }
@@ -705,9 +763,15 @@ function render(r){
       // the owner's reasoning differs from mine in a way I have not heard.
       // Tapping the recommended option is agreement with an analysis already
       // on screen, so it needs no second signal and gets none.
-      if (b.dataset.rec !== '1' && !(await confirmDivergence(b.dataset.q, b.dataset.a))) return
+      let answer = b.dataset.a
+      if (b.dataset.other === '1') {
+        answer = await promptOther(b.dataset.q)
+        if (!answer) return          // cancelled, or nothing typed
+      } else if (b.dataset.rec !== '1' && !(await confirmDivergence(b.dataset.q, answer))) {
+        return
+      }
 
-      const text = replyText(b.dataset.project, b.dataset.q, b.dataset.a)
+      const text = replyText(b.dataset.project, b.dataset.q, answer)
       let ok = true
       try { await navigator.clipboard.writeText(text) } catch (e) { ok = false }
       if(!ok){
@@ -730,7 +794,7 @@ function render(r){
         await fetch('answer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q: b.dataset.q, answer: b.dataset.a }),
+          body: JSON.stringify({ q: b.dataset.q, answer }),
         })
         last = ''
         setTimeout(poll, 1800)
