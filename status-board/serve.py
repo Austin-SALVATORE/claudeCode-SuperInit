@@ -313,7 +313,35 @@ class Board:
             }
             if who not in newest or age < newest[who]["lastMin"]:
                 newest[who] = row
-        return sorted(newest.values(), key=lambda r: r["lastMin"])
+
+        # The lead, whose transcript is NOT under subagents/ — it sits at the
+        # project root, one per session. Without this the board watches every
+        # participant except the one writing it, which is precisely backwards:
+        # every staleness signal here (git commits, teammate activity, elapsed
+        # minutes) measures something *other* than the person responsible for
+        # the narrative going stale. Now the owner can read "lead moved 0.2 min
+        # ago" beside "written 25 min ago" and see the gap directly.
+        # (Owner's observation, 1 Aug 2026.)
+        lead_age = None
+        for t in root.glob("*.jsonl"):
+            try:
+                age = (datetime.now().timestamp() - t.stat().st_mtime) / 60
+            except OSError:
+                continue
+            if age <= within_hours * 60 and (lead_age is None or age < lead_age):
+                lead_age = age
+        rows = sorted(newest.values(), key=lambda r: r["lastMin"])
+        if lead_age is not None:
+            rows.insert(
+                0,
+                {
+                    "who": "team-lead",
+                    "kind": "lead",
+                    "model": "",
+                    "lastMin": round(lead_age, 1),
+                },
+            )
+        return rows
 
     def tree_state(self) -> tuple[str, int]:
         porcelain = self.git("status", "--porcelain", default="\x00")
