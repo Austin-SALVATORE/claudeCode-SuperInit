@@ -33,15 +33,21 @@ description: Report to the owner on a live local web page instead of prose. Use 
    it, and do not ask again.** The page already applied the asymmetry
    before writing the file:
 
-   - Tapping the option marked `recommend: true` — the one labelled
-     *I'D PICK THIS* — records immediately. Agreeing with an analysis
-     printed on the same screen carries its own context.
-   - Tapping **any other option** opens a confirmation modal naming the
-     question and the choice, and records nothing until it is confirmed.
-     A divergence from your recommendation is where a misread is
-     expensive, so it costs a deliberate second action.
+   - Hitting the small **I'D PICK THIS pill** on the recommended option
+     records immediately. It is a precise target that cannot plausibly
+     be struck by accident, and it means agreement with an analysis
+     printed on the same screen.
+   - **Everything else confirms** — including the rest of that same
+     recommended row. Its label, its reason text and its padding are a
+     large target, and the exemption belongs to the pill, not to the
+     option. (Owner's rule, 1 Aug 2026, correcting an earlier version
+     that exempted the whole row and so made the easiest thing to hit by
+     mistake the only thing that recorded without asking.)
    - Cancelling or pressing Escape records nothing, so it never reaches
      you at all.
+   - Keyboard activation confirms, because the pill is not separately
+     focusable — the safe direction, and worth knowing rather than
+     mistaking for a bug.
 
    **So re-asking is now the failure mode, not under-asking.** An earlier
    version of this rule told the agent to confirm a non-recommended

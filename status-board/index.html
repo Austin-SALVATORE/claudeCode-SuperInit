@@ -622,7 +622,7 @@ function asks(list, project){
           data-rec="${o.recommend ? '1' : '0'}">
         <span class="lab">${md(o.label)}</span>
         ${o.recommend
-          ? '<span class="pick" data-copied="Copied ✓">I&rsquo;d pick this</span>'
+          ? '<span class="pick" data-copied="Copied ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
           : '<span></span>'}
         ${o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
       </button>`
@@ -769,16 +769,26 @@ function render(r){
   })
 
   document.querySelectorAll('.opt').forEach(b => {
-    b.onclick = async () => {
-      // Diverging from the recommendation is the expensive misread: it means
-      // the owner's reasoning differs from mine in a way I have not heard.
-      // Tapping the recommended option is agreement with an analysis already
-      // on screen, so it needs no second signal and gets none.
+    b.onclick = async (ev) => {
+      // The exemption belongs to the PILL, not to the option.
+      //
+      // Recording an answer is consequential — the agent acts on it — so the
+      // only click that skips confirmation is one that cannot plausibly be an
+      // accident: a hit on the small "I'd pick this" pill of the recommended
+      // option. The row around it is a large target; landing on its label,
+      // its reason text or its padding confirms like any other choice.
+      //
+      // Owner's rule, 1 Aug 2026. The earlier version exempted the whole
+      // recommended row, which made the easiest thing to hit by mistake also
+      // the only thing that recorded without asking.
+      const viaPill = ev.target instanceof Element && !!ev.target.closest('.pick')
+      const instant = b.dataset.rec === '1' && viaPill
+
       let answer = b.dataset.a
       if (b.dataset.other === '1') {
         answer = await promptOther(b.dataset.q)
         if (!answer) return          // cancelled, or nothing typed
-      } else if (b.dataset.rec !== '1' && !(await confirmDivergence(b.dataset.q, answer))) {
+      } else if (!instant && !(await confirmDivergence(b.dataset.q, answer))) {
         return
       }
 
