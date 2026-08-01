@@ -81,14 +81,13 @@ and the whole team will keep reaching for it until it is written down.
   without looking.
 
 - **A version number is a claim about a specific machine, so read it
-  off that machine.** `npm view <pkg> version`, a docs page, or memory
-  tells you what is *published* — not what is installed and therefore
-  not what any result was produced with. The installed manifest is the
-  only authority:
-
-  ```sh
-  node -p "require('<pkg>/package.json').version"   # not `npm view`
-  ```
+  off that machine.** A registry query, a docs page, or memory tells
+  you what is *published* — not what is installed, and therefore not
+  what any result was produced with. Every ecosystem has both kinds of
+  command and they are easy to confuse: the one that reaches the
+  network answers a different question from the one that reads the
+  installed artifact or the lockfile. Record the command this project
+  uses in the table above, and prefer the offline one.
 
   This matters most in a table headed "verified" or "installed and
   run", where a registry lookup silently upgrades a measurement into a
