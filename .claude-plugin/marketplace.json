@@ -1,0 +1,18 @@
+{
+  "name": "claudecode-superinit",
+  "owner": {
+    "name": "Austin Salvatore",
+    "url": "https://github.com/Austin-SALVATORE"
+  },
+  "metadata": {
+    "description": "Project bootstrap and live status reporting for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "project-init",
+      "source": "./",
+      "description": "Scaffold a project's .claude/ team structure and start a live status board.",
+      "homepage": "https://github.com/Austin-SALVATORE/claudeCode-SuperInit"
+    }
+  ]
+}

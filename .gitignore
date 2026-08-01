@@ -1,0 +1,10 @@
+# Board state is per-user and holds real repo paths, commit subjects and
+# decisions. It lives in ~/.claude/status-board/boards/ and must never be
+# committed here — this guard exists in case someone runs the server with
+# STATUS_BOARD_HOME pointed at the checkout.
+status-board/boards/
+boards/
+
+.DS_Store
+__pycache__/
+*.pyc

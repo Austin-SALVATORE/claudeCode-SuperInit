@@ -1,0 +1,821 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>status board</title>
+<style>
+  :root{
+    --bg:#16120f; --rail:#191512; --surface:#211c18; --raised:#2a241f;
+    --line:#332c25; --line2:#463d34;
+    --ink:#f2ede6; --ink2:#b6aca0; --ink3:#82786d;
+    --amber:#d9a048; --green:#7fb069; --red:#d97757; --blue:#6a9bc3;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+    --sans:ui-sans-serif,-apple-system,system-ui,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--sans)}
+  :focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:4px}
+
+  /* ── three temperatures: verified · moving · parked ───────────── */
+  .shell{display:grid;min-height:100dvh;
+    grid-template-columns:var(--wl,292px) minmax(0,1fr) var(--wr,320px);
+    grid-template-areas:"verified moving parked"}
+
+  .rail{background:var(--rail);align-self:stretch;position:relative}
+
+  /* Drag handles sit over the rail borders rather than in the grid, so
+     resizing never reflows the track definition it is trying to change. */
+  .grip{position:absolute;top:0;bottom:0;width:11px;cursor:col-resize;
+    z-index:5;background:none;border:0;padding:0;touch-action:none}
+  .grip-l{right:-6px} .grip-r{left:-6px}
+  .grip::after{content:"";position:absolute;top:0;bottom:0;left:5px;width:1px;
+    background:transparent;transition:background .12s}
+  .grip:hover::after,.grip:focus-visible::after,.grip.dragging::after{
+    background:var(--amber)}
+  .grip:focus-visible{outline:none}
+  body.resizing{cursor:col-resize;user-select:none}
+  .inner{position:sticky;top:0;max-height:100dvh;overflow-y:auto;padding:22px 20px 40px}
+  .rail-v{grid-area:verified;border-right:1px solid var(--line)}
+  .rail-p{grid-area:parked;border-left:1px solid var(--line)}
+  /* The centre absorbs whatever the rails give up, but stays capped: past
+     ~900px the card text stops being scannable and starts being prose. */
+  .moving{grid-area:moving;padding:22px 34px 72px;max-width:900px;
+    margin-inline:auto;width:100%;min-width:0}
+
+  /* ── eyebrows ─────────────────────────────────────────────────── */
+  .eyebrow{font:600 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;
+    color:var(--ink3);margin:0 0 12px}
+  .rail .eyebrow{padding-bottom:9px;border-bottom:1px solid var(--line)}
+  .block{margin-bottom:30px}
+  .block:last-child{margin-bottom:0}
+
+  /* ── masthead ─────────────────────────────────────────────────── */
+  .mark{font:600 13px/1 var(--mono);letter-spacing:.06em;color:var(--ink2);
+    display:flex;align-items:center;gap:8px;margin-bottom:24px}
+  .beacon{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+  .beacon.off{background:var(--red)}
+  .mark .state{color:var(--ink3);font-weight:400;letter-spacing:.1em;font-size:10px;
+    text-transform:uppercase;margin-left:auto}
+
+  h1{font:600 27px/1.2 var(--sans);letter-spacing:-.018em;margin:0 0 6px;
+    max-width:19ch;text-wrap:balance}
+  .stamp{font:12px/1.6 var(--mono);color:var(--ink3);margin:0 0 30px;letter-spacing:.02em}
+  .stamp .stale{color:var(--amber)}
+  .stamp i{font-style:normal;color:var(--line2);padding:0 7px}
+
+  /* ── verified facts: everything a command could re-derive ─────── */
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;
+    font:12.5px/1.35 var(--mono);margin:0}
+  .kv .k{color:var(--ink3);letter-spacing:.04em;min-width:0;overflow-wrap:anywhere}
+  .kv .v{color:var(--ink);text-align:right;min-width:0;overflow-wrap:anywhere}
+  .kv .v.ok{color:var(--green)}
+  .kv .v.warn{color:var(--amber)}
+
+  /* ── signature: the spine ─────────────────────────────────────── */
+  .spine{list-style:none;margin:0;padding:0;position:relative}
+  .spine::before{content:"";position:absolute;left:5px;top:12px;bottom:14px;
+    width:1px;background:var(--line2)}
+  .rung{position:relative;display:grid;grid-template-columns:11px 1fr;
+    gap:0 13px;padding:5px 0 9px}
+  .pip{width:11px;height:11px;border-radius:50%;margin-top:4px;
+    background:var(--rail);border:1.5px solid var(--line2);z-index:1}
+  .rung .nm{font:13px/1.35 var(--sans);color:var(--ink2)}
+  .rung .st{grid-column:2;font:600 9.5px/1 var(--mono);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink3);margin-top:4px}
+  .rung.shipped .pip{background:var(--green);border-color:var(--green)}
+  .rung.shipped .nm{color:var(--ink3)}
+  .rung.shipped .st{color:var(--green)}
+  .rung.held .pip{border-color:var(--amber);background:var(--amber)}
+  .rung.held .nm{color:var(--ink)}
+  .rung.held .st{color:var(--amber)}
+  .rung.running .pip{border-color:var(--blue);background:var(--blue);
+    animation:beat 2.4s ease-out infinite}
+  .rung.running .nm{color:var(--ink)}
+  .rung.running .st{color:var(--blue)}
+  .rung.todo .nm{color:var(--ink3)}
+  @keyframes beat{0%{box-shadow:0 0 0 0 rgba(106,155,195,.5)}
+    70%,100%{box-shadow:0 0 0 7px rgba(106,155,195,0)}}
+  @media(prefers-reduced-motion:reduce){.rung.running .pip{animation:none}}
+
+  /* who moved — machine-derived, so it lives with the verified half */
+  .crew{list-style:none;margin:0;padding:0}
+  .crew li{display:grid;grid-template-columns:1fr auto;gap:1px 8px;padding:7px 0;
+    border-bottom:1px solid var(--line)}
+  .crew li:last-child{border-bottom:0}
+  .crew .nm{font:13px/1.3 var(--sans);color:var(--ink2)}
+  .crew li.warm .nm{color:var(--ink)}
+  .crew .mdl,.crew .last,.crew .knd{font:11px/1.3 var(--mono);color:var(--ink3)}
+  .crew .mdl{text-align:right}
+  .crew .last{color:var(--ink3)}
+  .crew li.warm .last{color:var(--blue)}
+  .crew .knd{text-align:right;letter-spacing:.06em}
+
+  /* ── moving: cards ────────────────────────────────────────────── */
+  /* Foldable centre sections. Native <details> so keyboard and screen
+     readers work without a custom widget. */
+  details.sec{margin-bottom:30px}
+  details.sec>summary{cursor:pointer;list-style:none;display:flex;align-items:center;
+    gap:8px;margin-bottom:12px;font:600 10px/1 var(--mono);letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink3);padding:3px 0}
+  details.sec>summary::-webkit-details-marker{display:none}
+  details.sec>summary::before{content:"▸";font-size:11px;color:var(--ink3);
+    transition:transform .14s;display:inline-block}
+  details.sec[open]>summary::before{transform:rotate(90deg)}
+  details.sec>summary:hover{color:var(--ink2)}
+  details.sec>summary .n{margin-left:auto;color:var(--ink3);letter-spacing:.08em;
+    border:1px solid var(--line);border-radius:20px;padding:3px 8px}
+  @media(prefers-reduced-motion:reduce){details.sec>summary::before{transition:none}}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;
+    padding:15px 17px;margin-bottom:9px}
+  .card .t{font:600 15px/1.4 var(--sans);margin-bottom:4px}
+  .card .d{color:var(--ink2);font-size:14.5px}
+  .card .n{color:var(--ink3);font-size:13px;margin-top:7px}
+
+  .ask{border-color:var(--amber);background:#22190e}
+  /* An answered question stays visible so the loop is seen to close —
+     a decision that silently vanishes reads as a decision that was lost. */
+  .done{border-color:#3d5236}
+  .done .t{color:var(--ink2);font-weight:500}
+  .done .chose{display:flex;align-items:baseline;gap:9px;margin-top:8px;
+    font:15px/1.4 var(--sans);color:var(--ink)}
+  .done .chose::before{content:"✓";color:var(--green);font:13px var(--mono)}
+  .done .when{font:11px var(--mono);color:var(--ink3);margin-top:6px;
+    letter-spacing:.05em}
+  .ask .t{font-size:16px}
+  .opts{display:flex;flex-direction:column;gap:7px;margin-top:14px}
+  .opt{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
+    gap:4px 11px;align-items:center;text-align:left;
+    background:var(--raised);color:var(--ink);border:1px solid var(--line2);
+    border-radius:9px;padding:12px 14px;font:14.5px/1.4 var(--sans);
+    cursor:pointer;min-height:46px;transition:border-color .12s,color .12s}
+  .opt::before{content:"↩";font:12px var(--mono);color:var(--ink3)}
+  .opt:hover{border-color:var(--amber)}
+  .opt.copied{border-color:var(--green);color:var(--green)}
+  .opt.copied::before{content:"✓";color:var(--green)}
+  .opt .rsn{grid-column:2/4;font-size:13px;color:var(--ink3);line-height:1.4}
+  /* Quieter than the options — copying the question is a secondary move,
+     and must not compete with actually answering it. */
+  .copyq{margin-top:9px;width:100%;min-height:38px;border-radius:8px;
+    background:none;color:var(--ink3);border:1px dashed var(--line2);
+    font:12px var(--mono);letter-spacing:.04em;cursor:pointer}
+  .copyq:hover{color:var(--ink2);border-color:var(--amber)}
+  .opt.rec{border-color:var(--amber)}
+  .pick{position:relative;font:600 9.5px/1 var(--mono);letter-spacing:.12em;
+    text-transform:uppercase;color:var(--amber);border:1px solid var(--amber);
+    border-radius:20px;padding:4px 9px;white-space:nowrap;
+    transition:color .14s,border-color .14s,background-color .14s}
+  /* Clicking the recommended option confirms on the pill itself: it flips to
+     green and says so. The label swaps via ::after so the pill keeps its
+     original width and nothing shifts underneath it. */
+  .opt.copied .pick{color:transparent;border-color:var(--green);
+    background:var(--green);animation:pop .32s ease-out}
+  .opt.copied .pick::after{content:attr(data-copied);position:absolute;inset:0;
+    display:grid;place-items:center;color:#10210a;letter-spacing:.12em}
+  @keyframes pop{0%{transform:scale(1)}45%{transform:scale(1.12)}100%{transform:scale(1)}}
+  @media(prefers-reduced-motion:reduce){.opt.copied .pick{animation:none}}
+
+  /* A handoff is content leaving the board for a third party — a coach, a
+     colleague. Numbered because the owner will refer to items by number. */
+  .ho{border-color:var(--blue)}
+  .ho .to{font:600 9.5px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;
+    color:var(--blue);margin-bottom:7px}
+  .ho ol{margin:12px 0 0;padding:0;list-style:none;counter-reset:ho}
+  .ho ol li{counter-increment:ho;display:grid;grid-template-columns:22px 1fr;
+    gap:10px;padding:9px 0;border-top:1px solid var(--line)}
+  .ho ol li::before{content:counter(ho);font:600 12px/1.5 var(--mono);color:var(--blue)}
+  .ho .pt{font-weight:600;font-size:14.5px}
+  .ho .pd{color:var(--ink2);font-size:14px;margin-top:2px}
+  .ho .flag{margin-top:12px;padding-left:13px;border-left:2px solid var(--amber);
+    color:var(--ink2);font-size:14px}
+  .ho .send{margin-top:14px;width:100%;min-height:44px;border-radius:9px;
+    background:var(--raised);color:var(--ink);border:1px solid var(--line2);
+    font:600 14px var(--sans);cursor:pointer}
+  .ho .send:hover{border-color:var(--blue)}
+
+  .sev{display:inline-block;width:7px;height:7px;border-radius:50%;
+    margin-right:9px;vertical-align:.12em;flex:none}
+  .sev.high{background:var(--red)}
+  .sev.med{background:var(--amber)}
+  .sev.low{background:var(--ink3)}
+
+  /* held commits — mono, because a SHA is machine truth in a human list */
+  .commits{list-style:none;margin:0;padding:0}
+  .commits li{display:grid;grid-template-columns:auto 1fr;gap:12px;
+    padding:8px 0;border-bottom:1px solid var(--line);font-size:14.5px;color:var(--ink2)}
+  .commits li:last-child{border-bottom:0}
+  .commits .sha{font:12.5px/1.5 var(--mono);color:var(--amber);letter-spacing:.02em}
+  .why{color:var(--ink3);font-size:13.5px;margin-top:11px;
+    border-left:2px solid var(--line2);padding-left:13px}
+
+  /* ── backlog ──────────────────────────────────────────────────── */
+  .bl-head{display:flex;align-items:center;gap:9px;margin-bottom:12px;
+    padding-bottom:9px;border-bottom:1px solid var(--line)}
+  .bl-head .eyebrow{margin:0;padding:0;border:0;flex:1}
+  .addbtn{background:var(--raised);color:var(--ink2);border:1px solid var(--line2);
+    border-radius:7px;font:600 11px/1 var(--mono);letter-spacing:.06em;
+    padding:7px 10px;cursor:pointer;min-height:30px}
+  .addbtn:hover{border-color:var(--amber);color:var(--ink)}
+
+  .compose{display:none;margin-bottom:18px}
+  .compose.open{display:block}
+  .compose input,.compose textarea,.compose select{width:100%;background:var(--bg);
+    color:var(--ink);border:1px solid var(--line2);border-radius:8px;
+    padding:9px 11px;font:14px/1.4 var(--sans);margin-bottom:7px}
+  .compose textarea{resize:vertical;min-height:58px}
+  .compose .row{display:flex;gap:7px}
+  .compose .row button{flex:1;min-height:40px;border-radius:8px;cursor:pointer;
+    font:600 13px var(--sans);border:1px solid var(--line2)}
+  .compose .save{background:var(--amber);color:#1c1509;border-color:var(--amber)}
+  .compose .cancel{background:transparent;color:var(--ink3)}
+  .compose .err{color:var(--red);font-size:12.5px;min-height:1em;margin-bottom:4px}
+
+  .grp{font:600 9.5px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;
+    color:var(--ink3);margin:18px 0 8px}
+  .grp:first-child{margin-top:0}
+  .bl{list-style:none;margin:0;padding:0}
+  .bl li{padding:10px 0;border-bottom:1px solid var(--line)}
+  .bl li:last-child{border-bottom:0}
+  .bl .ttl{font-size:13.5px;line-height:1.45;color:var(--ink2)}
+  .bl li.mine .ttl{color:var(--ink)}
+  .bl .meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:4px;
+    font:11px/1.4 var(--mono);color:var(--ink3);min-width:0}
+  .bl .code{border:1px solid var(--line2);border-radius:4px;padding:1px 5px}
+  .bl .from{color:var(--amber)}
+  .bl .done{margin-left:auto;background:none;border:0;color:var(--ink3);
+    cursor:pointer;font:11px var(--mono);padding:4px 2px}
+  .bl .done:hover{color:var(--green)}
+
+  code{background:var(--raised);border-radius:5px;padding:1px 6px;
+    font:.86em var(--mono);color:var(--amber)}
+
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;
+    background:var(--green);color:#101f0a;padding:11px 20px;border-radius:9px;
+    font:600 14px var(--sans);opacity:0;transition:opacity .18s;pointer-events:none;z-index:9}
+  .toast.on{opacity:1}
+
+  /* ── collapse ─────────────────────────────────────────────────── */
+  @media(max-width:1160px){
+    .shell{grid-template-columns:268px minmax(0,1fr);
+      grid-template-areas:"verified moving" "verified parked"}
+    .rail-p{border-left:0;border-top:1px solid var(--line)}
+    .moving{padding:22px 26px 40px}
+  }
+  @media(max-width:820px){
+    .shell{grid-template-columns:minmax(0,1fr);
+      grid-template-areas:"moving" "verified" "parked"}
+    .rail{border:0;border-top:1px solid var(--line)}
+    .rail-v{border-right:0}
+    .inner{position:static;max-height:none;padding:24px 20px 30px}
+    .grip{display:none}   /* nothing to drag when the rails are stacked */
+    .moving{padding:20px 20px 24px;max-width:none}
+    h1{font-size:23px;max-width:none}
+  }
+
+  @media(prefers-color-scheme:light){
+    :root{--bg:#f6f2ec;--rail:#fffdfa;--surface:#fff;--raised:#f1ece4;
+      --line:#e2dbd0;--line2:#cfc5b7;--ink:#1c1815;--ink2:#4d453c;--ink3:#7d7367}
+    .ask{background:#fdf5e6}
+    .toast{color:#0e1c08}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="rail rail-v">
+    <button class="grip grip-l" id="gripL" role="separator" aria-orientation="vertical"
+      aria-label="Resize the verified column" title="Drag to resize · double-click to reset"></button>
+    <div class="inner">
+      <div class="mark"><span class="beacon" id="beacon"></span><span id="project">…</span>
+        <span class="state" id="tick">live</span></div>
+      <div class="block"><p class="eyebrow">Verified</p><dl class="kv" id="kv"></dl></div>
+      <div class="block" id="pipeblock"></div>
+      <div class="block" id="teamblock"></div>
+    </div>
+  </aside>
+
+  <main class="moving">
+    <h1 id="headline">…</h1>
+    <p class="stamp" id="stamp"></p>
+    <div id="body"></div>
+  </main>
+
+  <aside class="rail rail-p">
+    <button class="grip grip-r" id="gripR" role="separator" aria-orientation="vertical"
+      aria-label="Resize the backlog column" title="Drag to resize · double-click to reset"></button>
+    <div class="inner" id="parked"></div>
+  </aside>
+</div>
+
+<div class="toast" id="toast">Copied — paste it to me</div>
+
+<script>
+// ── resizable rails ──────────────────────────────────────────────────
+// The centre column is the flex track (minmax(0,1fr)), so dragging either
+// rail only ever takes from or gives to the reading column — the two rails
+// can never fight each other, and nothing can be squeezed to zero.
+const RAILS = {
+  wl: { el: 'gripL', min: 190, max: 560, def: 292, from: 'left' },
+  wr: { el: 'gripR', min: 190, max: 560, def: 320, from: 'right' },
+}
+const MIN_CENTRE = 380
+
+function setRail(key, px){
+  const { min, max } = RAILS[key]
+  const other = parseInt(getComputedStyle(document.documentElement)
+    .getPropertyValue(key === 'wl' ? '--wr' : '--wl')) || RAILS[key === 'wl' ? 'wr' : 'wl'].def
+  // Never let a drag starve the middle column; that is the one you read.
+  const ceiling = Math.min(max, window.innerWidth - other - MIN_CENTRE)
+  const val = Math.round(Math.max(min, Math.min(ceiling, px)))
+  document.documentElement.style.setProperty(`--${key}`, val + 'px')
+  try { localStorage.setItem('board.' + key, val) } catch (e) {}
+  return val
+}
+
+function initRails(){
+  for(const [key, cfg] of Object.entries(RAILS)){
+    let stored = null
+    try { stored = parseInt(localStorage.getItem('board.' + key)) } catch (e) {}
+    setRail(key, Number.isFinite(stored) ? stored : cfg.def)
+
+    const grip = document.getElementById(cfg.el)
+    const width = e => cfg.from === 'left' ? e.clientX : window.innerWidth - e.clientX
+
+    // Explicit drag state rather than hasPointerCapture(): capture can be
+    // refused or silently absent, and a divider that stops tracking mid-drag
+    // is worse than one that never moved.
+    let dragging = false
+    grip.addEventListener('pointerdown', e => {
+      e.preventDefault()
+      dragging = true
+      try { grip.setPointerCapture(e.pointerId) } catch (err) {}
+      grip.classList.add('dragging'); document.body.classList.add('resizing')
+    })
+    grip.addEventListener('pointermove', e => { if(dragging) setRail(key, width(e)) })
+    const stop = e => {
+      if(!dragging) return
+      dragging = false
+      try { grip.releasePointerCapture(e.pointerId) } catch (err) {}
+      grip.classList.remove('dragging'); document.body.classList.remove('resizing')
+    }
+    grip.addEventListener('pointerup', stop)
+    grip.addEventListener('pointercancel', stop)
+    // If the pointer is released off-element, capture may never fire pointerup.
+    window.addEventListener('pointerup', stop)
+    grip.addEventListener('dblclick', () => setRail(key, cfg.def))
+
+    // Keyboard: a divider you can only reach with a mouse is not a control.
+    grip.addEventListener('keydown', e => {
+      const step = e.shiftKey ? 48 : 16
+      const now = parseInt(getComputedStyle(document.documentElement)
+        .getPropertyValue(`--${key}`)) || cfg.def
+      const grow = cfg.from === 'left' ? 'ArrowRight' : 'ArrowLeft'
+      const shrink = cfg.from === 'left' ? 'ArrowLeft' : 'ArrowRight'
+      if(e.key === grow) setRail(key, now + step)
+      else if(e.key === shrink) setRail(key, now - step)
+      else if(e.key === 'Home') setRail(key, cfg.def)
+      else return
+      e.preventDefault()
+    })
+  }
+  // A window that narrows must not leave a stored width starving the centre.
+  window.addEventListener('resize', () => {
+    for(const key of Object.keys(RAILS)){
+      const now = parseInt(getComputedStyle(document.documentElement)
+        .getPropertyValue(`--${key}`)) || RAILS[key].def
+      setRail(key, now)
+    }
+  })
+}
+
+const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
+const md  = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>')
+const has = a => Array.isArray(a) && a.length
+const block = (label, inner) => inner ? `<div class="block"><p class="eyebrow">${esc(label)}</p>${inner}</div>` : ''
+
+// Centre sections fold once they get long, so a growing history never pushes
+// the live work off the screen. "Needs you" is never foldable — the one thing
+// that must always be visible is the thing being asked of you.
+const FOLD_OVER = 3
+function fold(label, inner, count, { never = false, openBelow = FOLD_OVER } = {}){
+  if(!inner) return ''
+  if(never) return `<div class="block"><p class="eyebrow">${esc(label)}</p>${inner}</div>`
+  const key = 'board.open.' + label
+  let stored = null
+  try { stored = localStorage.getItem(key) } catch (e) {}
+  // Remembered choice wins; otherwise short sections open, long ones fold.
+  const open = stored === null ? count <= openBelow : stored === '1'
+  return `<details class="sec"${open ? ' open' : ''} data-sec="${esc(label)}">
+    <summary>${esc(label)}${count ? `<span class="n">${count}</span>` : ''}</summary>
+    ${inner}</details>`
+}
+
+const tone = v => {
+  const s = String(v).toLowerCase()
+  if(['clean','none','ok','passing','green'].includes(s)) return 'ok'
+  if(/dirty|commits?$|not run|unknown|\?/.test(s)) return 'warn'
+  return ''
+}
+
+// How old a thing is, in words. Machine facts never reach this — they are
+// re-derived per request — so anything shown here is judgement with an age.
+const ago = m => m == null ? null
+  : m < 1.5 ? 'just now'
+  : m < 60  ? `${Math.round(m)} min ago`
+  : m < 1440 ? `${Math.round(m / 60)} h ago`
+  : `${Math.round(m / 1440)} d ago`
+
+function cards(list, cls = ''){
+  if(!has(list)) return ''
+  return list.map(x => `<div class="card ${cls}">
+    <div class="t">${x.sev ? `<span class="sev ${esc(x.sev)}"></span>` : ''}${md(x.what || x.title || '')}</div>
+    ${x.detail || x.d ? `<div class="d">${md(x.detail || x.d)}</div>` : ''}
+    ${x.who ? `<div class="n">${md(x.who)}</div>` : ''}
+    ${x.note ? `<div class="n">${md(x.note)}</div>` : ''}
+  </div>`).join('')
+}
+
+// An option is either a plain string, or {label, recommend, why} when there is
+// a reason to prefer one. The recommendation is for reading, not for pasting.
+//
+// The clipboard payload carries the QUESTION as well as the answer, and names
+// the project. A bare option label forces the reader on the other end to work
+// out what it was an answer to — across several boards, it may not even be
+// obvious which project it came from.
+const replyText = (project, question, answer) =>
+  `[${project} board] Re: ${question}\n→ ${answer}`
+
+// The whole question, for thinking about away from the screen or forwarding
+// to someone else. Options are numbered so they can be referred to by number,
+// and the recommendation is carried across — it is part of the question.
+const questionText = (project, q) => [
+  `[${project} board] ${q.q}`,
+  ...(q.why ? ['', q.why] : []),
+  '',
+  'Options:',
+  ...(q.options || []).map((raw, i) => {
+    const o = typeof raw === 'string' ? { label: raw } : raw
+    const mark = o.recommend ? '  ← my pick' : ''
+    const why = o.recommend && o.why ? `\n   ${o.why}` : ''
+    return `${i + 1}. ${o.label}${mark}${why}`
+  }),
+].join('\n').trim()
+
+function asks(list, project){
+  if(!has(list)) return ''
+  return list.map((q, qi) => `<div class="card ask">
+    <div class="t">${md(q.q)}</div>
+    ${q.why ? `<div class="d">${md(q.why)}</div>` : ''}
+    <div class="opts">${(q.options || []).map(raw => {
+      const o = typeof raw === 'string' ? { label: raw } : raw
+      // Question and answer ride as separate attributes and are joined on
+      // click — a newline inside an HTML attribute does not survive reliably.
+      return `<button class="opt${o.recommend ? ' rec' : ''}"
+          data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="${esc(o.label)}">
+        <span class="lab">${md(o.label)}</span>
+        ${o.recommend
+          ? '<span class="pick" data-copied="Copied ✓">I&rsquo;d pick this</span>'
+          : '<span></span>'}
+        ${o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
+      </button>`
+    }).join('')}</div>
+    <button class="copyq" data-question="${qi}">Copy the question with all ${(q.options || []).length} options</button>
+  </div>`).join('')
+}
+
+// Plain text for a human who has never seen this board — no project tag, no
+// arrows, nothing that reads as machine output. It is going into a message
+// to a coach, not back into a CLI.
+const handoffText = h => [
+  h.subject || '',
+  '',
+  ...(h.points || []).map((p, i) => `${i + 1}. ${p.q}${p.detail ? ` — ${p.detail}` : ''}`),
+  ...(h.flag ? ['', h.flag] : []),
+].join('\n').trim()
+
+function handoffs(list){
+  if(!has(list)) return ''
+  return list.map((h, idx) => `<div class="card ho">
+    <div class="to">For ${esc(h.to || 'someone else')}</div>
+    <div class="t">${md(h.subject || '')}</div>
+    ${h.why ? `<div class="d">${md(h.why)}</div>` : ''}
+    <ol>${(h.points || []).map(p => `<li><div>
+      <div class="pt">${md(p.q)}</div>
+      ${p.detail ? `<div class="pd">${md(p.detail)}</div>` : ''}
+    </div></li>`).join('')}</ol>
+    ${h.flag ? `<div class="flag">${md(h.flag)}</div>` : ''}
+    <button class="send" data-handoff="${idx}">Copy as a message</button>
+  </div>`).join('')
+}
+
+// The ticking parts, refreshed every poll without touching anything the
+// reader might be interacting with. No inputs live in here.
+function renderClocks(r){
+  const f = r.freshness || {}
+  const written = ago(f.narrativeAgeMin)
+  const measured = ago(f.checksAgeMin)
+  const stale = c => (f.narrativeAgeMin ?? 0) > 25 ? `<span class="stale">${c}</span>` : c
+  document.getElementById('stamp').innerHTML =
+    (written ? stale(`written ${esc(written)}`) : 'written —') +
+    (measured ? `<i>·</i>suite measured ${esc(measured)}` : '') +
+    '<i>·</i>git read live'
+
+  // Who moved, and when — from transcript mtimes, so an agent that goes quiet
+  // without reporting still shows up honestly as "quiet for 40 min".
+  document.getElementById('teamblock').innerHTML = has(r.team) ? block('Who moved',
+    `<ul class="crew">${r.team.map(t => `<li class="${t.lastMin < 5 ? 'warm' : ''}">
+      <span class="nm">${esc(t.who)}</span>
+      <span class="mdl">${esc(t.model)}</span>
+      <span class="last">${esc(ago(t.lastMin))}</span>
+      <span class="knd">${esc(t.kind)}</span>
+    </li>`).join('')}</ul>`) : ''
+}
+
+function render(r){
+  document.getElementById('project').textContent = (r.project || 'project').toUpperCase()
+  // The tab is how the owner tells two boards apart when both are open, so it
+  // has to come from the report like everything else. It was static markup
+  // until 1 Aug 2026 and named whichever project the board was built in.
+  document.title = (r.project || 'status') + ' — status'
+  document.getElementById('headline').textContent = r.headline || ''
+
+  document.getElementById('kv').innerHTML = Object.entries(r.state || {}).map(([k, v]) =>
+    `<dt class="k">${esc(k)}</dt><dd class="v ${tone(v)}">${esc(String(v))}</dd>`).join('')
+
+  const p = r.pipeline
+  document.getElementById('pipeblock').innerHTML = p ? block(p.title,
+    `<ol class="spine">${p.steps.map(s => `<li class="rung ${esc(s.status)}">
+        <span class="pip"></span><span class="nm">${md(s.name)}</span>
+        <span class="st">${esc(s.status)}</span></li>`).join('')}</ol>`) : ''
+
+  const commits = (r.held || []).map(c =>
+    `<li><span class="sha">${esc(c.sha)}</span><span>${md(c.what)}</span></li>`).join('')
+
+  const n = k => (r[k] || []).length
+
+  document.getElementById('body').innerHTML =
+    (r.error ? `<div class="card ask"><div class="t">The board could not build its report</div>
+      <div class="d">${md(r.error)}</div>
+      <div class="n">Fix the narrative file or restart <code>serve.py</code>. Everything below may be out of date.</div></div>` : '') +
+    fold('Needs you — tap to copy the question and your answer',
+         asks(r.decisions, r.project || 'project'), n('decisions'), { never: true }) +
+    fold('To take elsewhere', handoffs(r.handoffs), n('handoffs')) +
+    fold('Running now', cards(r.inFlight), n('inFlight')) +
+    fold('Held, unpushed', commits
+      ? `<ul class="commits">${commits}</ul>` +
+        (r.whyHeld ? `<div class="why">${md(r.whyHeld)}</div>` : '') : '', n('held')) +
+    fold('Worth knowing', cards(r.findings), n('findings')) +
+    // Decided folds soonest — it only grows, and it is history, not work.
+    fold('Decided', (r.answered || []).map(a => `<div class="card done">
+      <div class="t">${md(a.q)}</div>
+      <div class="chose">${md(a.chose)}</div>
+      ${a.note ? `<div class="n">${md(a.note)}</div>` : ''}
+      ${a.when ? `<div class="when">${esc(a.when)}</div>` : ''}
+    </div>`).join(''), n('answered'), { openBelow: 1 })
+
+  // Remember what the reader opened; re-renders happen every few seconds and
+  // must not snap a section shut under them.
+  document.querySelectorAll('details.sec').forEach(d => {
+    d.addEventListener('toggle', () => {
+      try { localStorage.setItem('board.open.' + d.dataset.sec, d.open ? '1' : '0') } catch (e) {}
+    })
+  })
+
+  renderBacklog(r)
+
+  document.querySelectorAll('[data-question]').forEach(b => {
+    b.onclick = async () => {
+      const q = (r.decisions || [])[+b.dataset.question]
+      let ok = true
+      try {
+        await navigator.clipboard.writeText(questionText(r.project || 'project', q))
+      } catch (e) { ok = false }
+      toast(ok ? 'Question and options copied' : 'Copy blocked by the browser')
+    }
+  })
+
+  document.querySelectorAll('[data-handoff]').forEach(b => {
+    b.onclick = async () => {
+      const text = handoffText((r.handoffs || [])[+b.dataset.handoff] || {})
+      let ok = true
+      try { await navigator.clipboard.writeText(text) } catch (e) { ok = false }
+      toast(ok ? 'Copied — ready to send' : 'Copy blocked by the browser')
+    }
+  })
+
+  document.querySelectorAll('.opt').forEach(b => {
+    b.onclick = async () => {
+      const text = replyText(b.dataset.project, b.dataset.q, b.dataset.a)
+      let ok = true
+      try { await navigator.clipboard.writeText(text) } catch (e) { ok = false }
+      if(!ok){
+        // Clipboard can be blocked. Select the text so it is still copyable
+        // by hand rather than claiming a copy that never happened.
+        const ta = document.createElement('textarea')
+        ta.value = text; ta.style.cssText = 'position:fixed;opacity:0'
+        document.body.appendChild(ta); ta.select()
+        try { ok = document.execCommand('copy') } catch (e) { ok = false }
+        ta.remove()
+      }
+      b.classList.add('copied')
+      toast(ok ? 'Copied with the question — just paste it' : 'Copy blocked — select the text by hand')
+      setTimeout(() => b.classList.remove('copied'), 1700)
+
+      // Record it server-side too, so the question leaves "Needs you" on the
+      // next poll whether or not I remember to move it. The copy is for me;
+      // this is so the board stops asking you something you have answered.
+      try {
+        await fetch('answer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ q: b.dataset.q, answer: b.dataset.a }),
+        })
+        last = ''
+        setTimeout(poll, 1800)
+      } catch (e) {}
+    }
+  })
+}
+
+// Every field on this page is re-fetched on a 3s tick, so a commit by any
+// teammate, or a narrative I rewrite, appears without anyone refreshing. The
+// server re-derives git per request; nothing here is cached.
+//   - `updatedAt` changes every request, so it is stripped before comparing;
+//     otherwise the page would re-render 20 times a minute and lose focus.
+//   - Coming back to the tab re-reads immediately rather than waiting out
+//     the tick, and browsers throttle timers in hidden tabs anyway.
+const POLL_MS = 3000
+
+// Fields that change on EVERY request because they are ages in minutes.
+// Comparing raw text meant the key never matched, so the whole board was
+// rebuilt every 3s — which wiped the compose form mid-typing. Strip the
+// clocks; rebuild only when something real changes.
+function stableKey(txt){
+  try {
+    const c = JSON.parse(txt)
+    delete c.updatedAt
+    delete c.freshness
+    ;(c.team || []).forEach(t => { delete t.lastMin })
+    ;(c.backlog || []).forEach(b => { delete b.ageDays })
+    return JSON.stringify(c)
+  } catch (e) {
+    return txt   // unparseable: fall back to text, so errors still surface
+  }
+}
+
+// Grouped by what the item is waiting on, because that is what decides
+// whether you can act on it — not by which document it came from.
+const GROUPS = [
+  ['needs-triage', 'Added by you'],
+  ['needs-you',    'Waiting on you'],
+  ['ready',        'Ready to pick up'],
+  ['unverified',   'Nobody has looked'],
+  ['unowned',      'No owner'],
+]
+const agedays = d => d == null ? '' : d < 1 ? 'today' : `${Math.round(d)}d old`
+
+function renderBacklog(r){
+  const items = r.backlog || []
+
+  // A real content change (someone adds an item) still rebuilds this rail.
+  // Carry the compose box across it: an open form and half-typed text must
+  // survive, or the board eats your work while you are writing it.
+  const prev = document.getElementById('compose')
+  const keep = prev ? {
+    open:  prev.classList.contains('open'),
+    title: document.getElementById('ttl')?.value || '',
+    kind:  document.getElementById('kind')?.value || 'task',
+    notes: document.getElementById('notes')?.value || '',
+    focus: document.activeElement?.id || null,
+  } : null
+  const groups = GROUPS.map(([key, label]) => {
+    const rows = items.filter(i => (i.state || 'unowned') === key)
+    if(!rows.length) return ''
+    return `<p class="grp">${esc(label)} · ${rows.length}</p><ul class="bl">${rows.map(i => `
+      <li class="${i.source === 'you' ? 'mine' : ''}">
+        <div class="ttl">${md(i.title || '')}</div>
+        <div class="meta">
+          ${i.code ? `<span class="code">${esc(i.code)}</span>` : ''}
+          ${i.source === 'you' ? '<span class="from">from you</span>' : ''}
+          ${i.notes ? `<span>${md(i.notes)}</span>` : ''}
+          <span>${esc(agedays(i.ageDays))}</span>
+          ${i.source === 'you' ? `<button class="done" data-done="${esc(i.id)}"
+              title="Mark done">done</button>` : ''}
+        </div>
+      </li>`).join('')}</ul>`
+  }).join('')
+
+  document.getElementById('parked').innerHTML = `
+    <div class="bl-head">
+      <p class="eyebrow">Backlog · ${items.length}</p>
+      <button class="addbtn" id="addtoggle">+ Add</button>
+    </div>
+    <form class="compose" id="compose">
+      <div class="err" id="composeErr"></div>
+      <input id="ttl" placeholder="What needs doing?" maxlength="300" required>
+      <select id="kind">
+        <option value="task">Task</option>
+        <option value="bug">Bug</option>
+        <option value="idea">Idea</option>
+        <option value="question">Question</option>
+      </select>
+      <textarea id="notes" placeholder="Anything I would need to know (optional)"></textarea>
+      <div class="row">
+        <button type="submit" class="save">Add to backlog</button>
+        <button type="button" class="cancel" id="composeCancel">Cancel</button>
+      </div>
+    </form>
+    ${groups || '<p class="grp">Nothing parked</p>'}`
+
+  const form = document.getElementById('compose')
+
+  if(keep && (keep.open || keep.title || keep.notes)){
+    form.classList.toggle('open', keep.open)
+    document.getElementById('ttl').value = keep.title
+    document.getElementById('kind').value = keep.kind
+    document.getElementById('notes').value = keep.notes
+    if(keep.focus) document.getElementById(keep.focus)?.focus()
+  }
+
+  document.getElementById('addtoggle').onclick = () => {
+    form.classList.toggle('open')
+    if(form.classList.contains('open')) document.getElementById('ttl').focus()
+  }
+  document.getElementById('composeCancel').onclick = () => form.classList.remove('open')
+
+  form.onsubmit = async e => {
+    e.preventDefault()
+    const err = document.getElementById('composeErr')
+    err.textContent = ''
+    try {
+      const res = await fetch('backlog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: document.getElementById('ttl').value,
+          kind:  document.getElementById('kind').value,
+          notes: document.getElementById('notes').value,
+        }),
+      })
+      const out = await res.json()
+      if(!out.ok) throw new Error(out.error || 'The board would not save it.')
+      form.reset(); form.classList.remove('open')
+      last = ''; poll()   // force a re-render; the new item is on disk now
+      toast('Added — I read this file, no need to paste it')
+    } catch (ex) {
+      err.textContent = ex.message   // say what went wrong, keep what was typed
+    }
+  }
+
+  document.querySelectorAll('[data-done]').forEach(b => {
+    b.onclick = async () => {
+      await fetch('backlog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: b.dataset.done, state: 'done' }),
+      })
+      last = ''; poll()
+    }
+  })
+}
+
+function toast(msg){
+  const t = document.getElementById('toast')
+  t.textContent = msg; t.classList.add('on')
+  setTimeout(() => t.classList.remove('on'), 2200)
+}
+
+let last = ''
+let inflight = false
+
+async function poll(){
+  if(inflight) return
+  inflight = true
+  const tick = document.getElementById('tick'), beacon = document.getElementById('beacon')
+  try {
+    const res = await fetch('report.json?t=' + Date.now(), { cache: 'no-store' })
+    const txt = await res.text()
+    const data = JSON.parse(txt)
+    const key = stableKey(txt)
+    if(key !== last){ last = key; render(data) }
+    renderClocks(data)   // ages tick every poll; the rest only when it changes
+    tick.textContent = res.ok ? 'live' : 'error'
+    beacon.classList.toggle('off', !res.ok)
+  } catch (e) {
+    tick.textContent = 'offline'; beacon.classList.add('off')
+  } finally {
+    inflight = false
+  }
+}
+
+initRails()
+poll()
+setInterval(poll, POLL_MS)
+document.addEventListener('visibilitychange', () => { if(!document.hidden) poll() })
+window.addEventListener('focus', poll)
+</script>
+</body>
+</html>

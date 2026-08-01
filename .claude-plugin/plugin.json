@@ -1,0 +1,19 @@
+{
+  "name": "project-init",
+  "version": "0.1.0",
+  "description": "Bootstrap a project's .claude/ team structure — lead, architect, dev, QA, a subagent bench, and a live status board — so a new repository starts with a working practice instead of acquiring one.",
+  "author": {
+    "name": "Austin Salvatore"
+  },
+  "repository": "https://github.com/Austin-SALVATORE/claudeCode-SuperInit",
+  "license": "MIT",
+  "keywords": [
+    "bootstrap",
+    "scaffold",
+    "agent-teams",
+    "subagents",
+    "status-board",
+    "verification"
+  ],
+  "skills": "./skills/"
+}
