@@ -36,6 +36,7 @@ Env:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -87,6 +88,59 @@ def load(path: Path):
         return None
 
 
+def read_pid(lock_path: Path) -> int | None:
+    """Best-effort read of the pid recorded in an existing lock file — for
+    naming the incumbent in a refusal message, never for deciding whether
+    it still holds the lock. That decision belongs to `acquire_lock`
+    alone, via the kernel, not to a number read from disk."""
+    try:
+        text = lock_path.read_text(encoding="utf-8").strip()
+        return int(text) if text else None
+    except (OSError, ValueError):
+        return None
+
+
+def acquire_lock(lock_path: Path):
+    """Exclusive, per-board watcher lock via `flock` — deliberately not a
+    hand-rolled "read a pid, check it's alive" scheme.
+
+    A pid file the watcher itself judges is exactly the trap this project
+    keeps meeting in other costumes: pids are reused, so a stale record
+    naming a pid that now belongs to an unrelated process would make this
+    watcher inherit that process's identity and either refuse forever
+    against a ghost or, worse, treat a live unrelated process as "our own
+    old watcher, safe to ignore". `flock` sidesteps the question rather
+    than answering it carefully: the lock is a property the kernel tracks
+    against the open file descriptor itself, not a fact this script
+    reconstructs from a number. A watcher killed with `kill -9` cannot
+    clean up, but it also cannot keep holding a kernel-tracked lock after
+    its process table entry is gone — release is automatic, with no
+    staleness window and no identity check to get wrong.
+
+    The pid is still written into the file's content on success, purely
+    so a *refused* watcher has something to name in its own message
+    ("already armed (pid N)") — that string is for a human reading the
+    log, never an input to this function's own decision.
+
+    Returns the open file object on success (kept open for the process's
+    entire life — closing it releases the lock), or `None` if another
+    live watcher already holds it.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    fh = os.fdopen(fd, "r+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        return None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else Path.cwd()
     answers_file = STATE / "boards" / slug_for(repo) / "answers.json"
@@ -103,33 +157,87 @@ def main() -> int:
         )
         return 1
 
-    # Always announce. Without this line a dead watcher and a quiet watcher
-    # are the same observation — the "silence is not success" trap,
-    # reintroduced by the very guard meant to fix it.
-    print(
-        f"WATCHER ARMED on {answers_file} — primed with {len(seen)} existing "
-        "answer(s), none will be replayed",
-        flush=True,
-    )
+    # One watcher per board, not one per session — a compacted session has
+    # no memory of a watcher it already armed, so a hook telling it "arm
+    # unless already armed" is instructing a reader who lost the only
+    # record that would let it comply. This is the actual fix: something
+    # that can observe the truth (a live process holding the lock)
+    # instead of something that has to remember it.
+    lock_path = answers_file.parent / "watcher.lock"
+    previous_pid = read_pid(lock_path)
+    lock_fh = acquire_lock(lock_path)
+    if lock_fh is None:
+        incumbent = read_pid(lock_path)
+        who = f"pid {incumbent}" if incumbent is not None else "an unknown process"
+        # Deliberately does not contain the substring "WATCHER ARMED" —
+        # the caller tells armed from not-armed by looking for that exact
+        # line, and a refusal that could be mistaken for one would be a
+        # new silent failure wearing the old one's clothes.
+        print(
+            f"WATCHER REFUSED — {who} is already armed on {answers_file}; "
+            "not starting a second watcher against the same board. The "
+            "existing one is untouched and still running.",
+            flush=True,
+        )
+        return 1
 
-    while True:
-        time.sleep(INTERVAL)
-        current = load(answers_file)
-        if current is None:
-            continue
-        for question, record in current.items():
-            # Keyed on question -> (timestamp, answer), so re-answering the
-            # same question surfaces again instead of being suppressed as
-            # seen — including when the owner changes their mind and the
-            # answer text differs while the question is identical.
-            if seen.get(question) != record:
-                seen[question] = record
-                at, answer = record
-                # Both halves, on one line each, so the notification is
-                # self-sufficient. Stdout lines within 200ms batch into a
-                # single notification, so this stays one event.
-                print(f"BOARD ANSWER — {question}", flush=True)
-                print(f"  → {answer}   [{at}]", flush=True)
+    # Distinguish a fresh start from taking over a lock a killed watcher
+    # left behind — both are correct, but only one of them is worth a
+    # human noticing, and folding them into one silent case would hide
+    # exactly the recovery this lock exists to make possible.
+    if previous_pid is not None and previous_pid != os.getpid():
+        print(
+            f"WATCHER ARMED on {answers_file} — took over a lock left behind "
+            f"by pid {previous_pid} (no longer running), primed with "
+            f"{len(seen)} existing answer(s), none will be replayed",
+            flush=True,
+        )
+    else:
+        # Always announce. Without this line a dead watcher and a quiet
+        # watcher are the same observation — the "silence is not success"
+        # trap, reintroduced by the very guard meant to fix it.
+        print(
+            f"WATCHER ARMED on {answers_file} — primed with {len(seen)} existing "
+            "answer(s), none will be replayed",
+            flush=True,
+        )
+
+    try:
+        while True:
+            time.sleep(INTERVAL)
+            current = load(answers_file)
+            if current is None:
+                continue
+            for question, record in current.items():
+                # Keyed on question -> (timestamp, answer), so re-answering
+                # the same question surfaces again instead of being
+                # suppressed as seen — including when the owner changes
+                # their mind and the answer text differs while the
+                # question is identical.
+                if seen.get(question) != record:
+                    seen[question] = record
+                    at, answer = record
+                    # Both halves, on one line each, so the notification is
+                    # self-sufficient. Stdout lines within 200ms batch into
+                    # a single notification, so this stays one event.
+                    print(f"BOARD ANSWER — {question}", flush=True)
+                    print(f"  → {answer}   [{at}]", flush=True)
+    finally:
+        # Best-effort tidiness, not correctness: the kernel already
+        # released the lock the moment our fd closes, whether that
+        # happens here or via SIGKILL skipping this entirely. Only remove
+        # the file if it still names us — a fresh watcher should never
+        # have its own lock file deleted out from under it.
+        try:
+            if read_pid(lock_path) == os.getpid():
+                lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        lock_fh.close()
+    # No `return` here: the loop above never exits on its own, so the only
+    # ways out of this function are the early `return 1`s above and
+    # `KeyboardInterrupt` propagating past the `finally` — same shape as
+    # before this change, just with cleanup now sitting in its path.
 
 
 if __name__ == "__main__":
