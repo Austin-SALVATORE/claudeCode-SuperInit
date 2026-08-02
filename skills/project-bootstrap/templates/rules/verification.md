@@ -80,6 +80,29 @@ and the whole team will keep reaching for it until it is written down.
   pointer propagates a false belief into every reader who follows it
   without looking.
 
+- **A plan invalidates its own citations as it is executed**, and its
+  first phase is the worst offender, because everything downstream is
+  still unwritten when it lands. Seen in the wild: a phase whose entire
+  purpose was correcting stale claims *in the code* shifted one file by
+  +4 lines and another by +1 — silently making the **plan's** line
+  numbers wrong for every later phase. The fix and the failure were the
+  same shape, one level up.
+
+  So **resolve a citation by content, not by number**: find the rule,
+  symbol or comment it names, and treat the number as a hint. Anchor to
+  a name when writing one — a citation that cannot go stale beats one
+  that is merely correct today.
+
+  And distinguish the two failure modes when reporting them, because
+  they mean different things: a citation landing a few lines off is
+  **drift**; a citation naming something that does not exist is a
+  **defect**, and only the second means the author was wrong about the
+  code.
+
+  Do not answer this by re-numbering a long plan by hand. That acquires
+  new errors faster than it sheds old ones — state the known offsets in
+  the plan's header instead, and let readers resolve by name.
+
 - **A version number is a claim about a specific machine, so read it
   off that machine.** A registry query, a docs page, or memory tells
   you what is *published* — not what is installed, and therefore not
