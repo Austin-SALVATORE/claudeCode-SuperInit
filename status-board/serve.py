@@ -264,6 +264,30 @@ class Board:
     # never the owner's free text — so the original 500-character cap stays;
     # it was never the field that lost anything.
     QUESTION_MAX_CHARS = 500
+    # `do_POST` rejects the raw HTTP body before this class ever sees it, on
+    # a byte count against `Content-Length` — and that used to be an
+    # independent literal, 8192, chosen once for a payload that was always a
+    # short choice or a short backlog title. Raising ANSWER_MAX_CHARS above
+    # without touching that number left it as the *real* limit: every answer
+    # the JSON body of which crossed 8192 bytes was rejected with a 400
+    # before `record_answer` ran, silently as far as the owner could tell
+    # (the client did not check the response — fixed separately, in
+    # index.html). Measured live against the real endpoint: 8,160 ASCII
+    # characters fit, 8,170 did not; in Chinese, 3 bytes/character, the
+    # usable ceiling was roughly 2,700 characters, a third of the English
+    # one — for the owner this board is actually for, this was the tighter
+    # cap by far, not the character one below it.
+    #
+    # Derived from ANSWER_MAX_CHARS rather than stated as a second number, so
+    # the two cannot drift apart silently again: worst-case UTF-8 is 4 bytes
+    # per character (surrogate-pair / astral-plane code points — well above
+    # ordinary CJK, which is 3), so the answer field alone can cost up to
+    # ANSWER_MAX_CHARS * 4 bytes on the wire. The remaining margin covers the
+    # `question` field at its own worst case (QUESTION_MAX_CHARS * 4) plus
+    # the small JSON envelope (`{"q":"","answer":""}` and escaping) and the
+    # unrelated `/backlog` route's payload, which shares this same gate and
+    # is always far smaller.
+    MAX_BODY_BYTES = ANSWER_MAX_CHARS * 4 + QUESTION_MAX_CHARS * 4 + 4096
 
     def record_answer(self, question: str, answer: str) -> dict:
         question, answer = str(question).strip(), str(answer).strip()
@@ -640,8 +664,15 @@ def make_handler(board: Board, token: str | None = None):
                 return self.send_error(404)
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                if length <= 0 or length > 8192:
-                    raise ValueError("Body must be between 1 byte and 8 KB.")
+                # board.MAX_BODY_BYTES, not a literal here: this gate exists
+                # to stop something pathological, not to be the board's real
+                # content limit — that limit is board.ANSWER_MAX_CHARS, and
+                # this number is derived from it precisely so it cannot
+                # become the binding one again by accident.
+                if length <= 0 or length > board.MAX_BODY_BYTES:
+                    raise ValueError(
+                        f"Body must be between 1 byte and {board.MAX_BODY_BYTES} bytes."
+                    )
                 payload = json.loads(self.rfile.read(length))
                 if not isinstance(payload, dict):
                     raise ValueError("Expected a JSON object.")

@@ -198,7 +198,15 @@
      rather overflow the card than shrink below that — this is the one line
      that stops it. overflow-wrap is the same guarantee for the rare word
      that is still too long to wrap normally. */
-  .chosetxt{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+  /* max-height + its own scrollbar, not just wrapping: a full-length CJK
+     answer near the 20,000-character cap measured 11,843px tall with no
+     limit here, and five of them on one board made the page 30,969px — 34x
+     the viewport, for a card whose entire point was to stay legible. This
+     caps the box, not the content: nothing above is trimmed, the full text
+     is still in the DOM and still reachable by scrolling inside the card,
+     it just stops setting the height of the page around it. */
+  .chosetxt{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;
+    max-height:380px;overflow-y:auto}
   /* Same visual language as .card.unconfirmed's dashed amber border: doubt
      the reader should see without reading the words. This one says the text
      above it is known incomplete, not just possibly stale. */
@@ -384,9 +392,13 @@
     font:.86em var(--mono);color:var(--amber)}
 
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;
+    max-width:min(90vw,520px);text-align:center;
     background:var(--green);color:#101f0a;padding:11px 20px;border-radius:9px;
     font:600 14px var(--sans);opacity:0;transition:opacity .18s;pointer-events:none;z-index:9}
   .toast.on{opacity:1}
+  /* Distinct from the routine green "Copied" toast on purpose — this is the
+     one that means "the thing you just did did not happen." */
+  .toast.err{background:var(--red);color:#2a0d05}
 
   /* ── collapse ─────────────────────────────────────────────────── */
   @media(max-width:1160px){
@@ -1122,15 +1134,41 @@ function render(r){
       // Record it server-side too, so the question leaves "Needs you" on the
       // next poll whether or not I remember to move it. The copy is for me;
       // this is so the board stops asking you something you have answered.
+      //
+      // A non-2xx response does NOT throw — fetch() only rejects on a
+      // network failure, so a bare `try { await fetch(...) } catch {}`
+      // treats a rejected answer exactly like a recorded one: nothing tells
+      // the owner it did not stick. Verified live (2 Aug 2026): the server's
+      // own body-size cap rejected a real answer with a 400, and this code,
+      // unchanged, proceeded as if it had succeeded — the question would
+      // have kept reappearing as "Needs you" with no explanation. The
+      // clipboard copy above is not a substitute for this check; it is the
+      // fallback THIS failure needs, and it only works if the owner is told
+      // to use it.
       try {
-        await fetch('answer', {
+        const res = await fetch('answer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ q: b.dataset.q, answer }),
         })
-        last = ''
-        setTimeout(poll, 1800)
-      } catch (e) {}
+        if (res.ok) {
+          last = ''
+          setTimeout(poll, 1800)
+        } else {
+          // The server's own error strings (record_answer's ValueErrors) are
+          // already full sentences ending in a period; the generic
+          // `HTTP ${status}` fallback is not. Stripping any trailing period
+          // before adding our own avoids "...bytes.. Still on your
+          // clipboard" — caught by actually reading the rendered toast, not
+          // by inspecting the template.
+          let reason = `HTTP ${res.status}`
+          try { const j = await res.json(); if (j && j.error) reason = j.error } catch (e) {}
+          reason = reason.replace(/\.+$/, '')
+          toast(`NOT recorded on the board — ${reason}. Still on your clipboard — paste it into chat so it is not lost.`, 'error')
+        }
+      } catch (e) {
+        toast('NOT recorded — could not reach the board server. Still on your clipboard — paste it into chat so it is not lost.', 'error')
+      }
     }
   })
 }
@@ -1277,10 +1315,27 @@ function renderBacklog(r){
   })
 }
 
-function toast(msg){
+// kind: 'error' gets the red styling and a longer display — a failed
+// recording is the one toast on this page that must not be missed, and it
+// carries more to read (the reason, plus what to do about it) than "Copied".
+//
+// A single tracked timer, not a bare setTimeout: the "Copied..." toast for
+// this same click already fires before the fetch that can produce an error
+// toast, so on every failed submission two toast() calls land close
+// together. Two independent setTimeouts each hide the class on their own
+// clock — the first one's (2200ms, scheduled at the earlier call) would fire
+// while the second, longer-lived error toast is still supposed to be
+// showing, cutting it short. Clearing the previous timer on every call makes
+// only the latest call's duration win, which is what "the owner must be
+// told" requires in practice, not just as a claim.
+let toastTimer = null
+function toast(msg, kind){
   const t = document.getElementById('toast')
-  t.textContent = msg; t.classList.add('on')
-  setTimeout(() => t.classList.remove('on'), 2200)
+  t.textContent = msg
+  t.classList.toggle('err', kind === 'error')
+  t.classList.add('on')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => t.classList.remove('on'), kind === 'error' ? 5000 : 2200)
 }
 
 let last = ''
