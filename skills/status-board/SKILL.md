@@ -310,6 +310,46 @@ The machine half needs nothing. The judgement half is on you:
   on both completion events — this was never a diligence gap. Nothing
   had ever told the agent that a *new* decision arriving inside a
   deliverable needed routing to the board at all.)
+- **A deliverable that names work it deliberately did not do becomes
+  `queued`, in the same action that receives the report — before any
+  reply.** Same shape as the rule above, and the same reason: the item
+  exists the moment it is written down, not the next time the file
+  happens to get rewritten. What differs is what it is — not a question
+  for the owner to answer, but known future work, stated in writing, by
+  whoever knows the code best. The board has never seen it unless it is
+  put there.
+
+  The tells, concretely, because this is what an agent should be
+  scanning its own inbox for: a section headed **"not in this commit"**,
+  "out of scope", "deliberately omitted", "left for later", "flagged,
+  not solved", "not investigated"; a sentence shaped like *"X must be
+  closed before Y"*; and — included on purpose, not an afterthought —
+  **a promise the lead itself makes in passing**, "I'll sequence that",
+  "mine to do later". The rule binds the lead's own undertakings as much
+  as a teammate's report: an item held only in the lead's context has
+  exactly the same failure mode as one held only in a teammate's message
+  — it survives until the next message arrives, and then it is gone, not
+  forgotten on purpose, just never written down.
+
+  Why prose cannot do this job is the same argument as the rule above,
+  one level over: an item that exists only in a reply someone read and
+  moved past cannot be found again except by remembering to ask; has no
+  state (`ready` / `unowned` / `done`) so nobody can tell later whether
+  it was picked up or abandoned; and vanishes the moment the conversation
+  that produced it does. `queued` makes it durable the same way
+  `decisions` makes a question durable.
+
+  (2 Aug 2026: a dev's completion report closed with a section headed
+  "Explicitly not in this commit" — eight items, including the write
+  path — and a second, "flagged, not solved," with three more. All
+  eleven were read, replied to where a reply was owed, and left nowhere
+  but the lead's own head. The owner found the most important one by
+  asking why a button did not exist: *"if I don't ask, you will never
+  remind me to decide for the write path as next move, why this todo
+  hidden by you and not in the queued task?"* The same evening, and the
+  same failure one level up: the lead told the owner it would re-cut a
+  set of baselines, then did not, for hours, because that undertaking
+  also lived nowhere but the reply that made it.)
 - **Always bump `writtenAt`.** Past 25 minutes the stamp turns amber and
   the owner can see the words are old. That is the point — never leave it
   unchanged to hide staleness.
