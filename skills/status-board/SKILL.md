@@ -267,6 +267,49 @@ The machine half needs nothing. The judgement half is on you:
   anything else you do with it. If the owner has to ask "where are we?",
   the board already failed; and if they have to ask twice, the fix is
   never "be more careful."
+- **A deliverable that names a decision for the owner becomes
+  `decisions`, in the same action that receives it — before any reply,
+  and before the options are explained in prose.** A different failure
+  from the rule above: that one is about state that goes stale
+  (`inFlight`'s worked example is a claim that was true and stopped
+  being true); this is about a question that has never been on the board
+  at all, because it did not exist until the deliverable that named it
+  arrived. A section literally titled "What the owner is being asked",
+  or a list of options with a recommendation, is exactly this — route it
+  onto the board the moment you receive it, not the next time you happen
+  to write the file.
+
+  **The tell is specific and does not feel like an error: you are about
+  to explain the options to the owner in prose.** That sensation —
+  summarising a long plan into something readable — is genuinely useful,
+  which is exactly why it substitutes for the board without anyone
+  noticing. Once the options have been explained well in chat, the
+  pressure to also put them on the board disappears entirely, and a
+  well-written paragraph is a more convincing substitute than a bad one.
+
+  Why a chat message cannot do this job, stated rather than assumed: a
+  decision that lives only in prose cannot be tapped; does not travel
+  with its own question when answered, so a later reply arrives without
+  the context that produced it; cannot be seen as outstanding, because
+  prose scrolls away; and has no `answered` counterpart, so nobody can
+  tell later whether it was decided or silently dropped. `decisions` ->
+  `answered` exists precisely to make all four impossible, and none of
+  it applies to a paragraph.
+
+  Prose explaining *why* an option is recommended is still good and
+  still belongs in the reply — the failure is prose that is the *only*
+  place the question exists, not prose that exists at all.
+
+  (2 Aug 2026: an architect's plan named a real decision — four options,
+  a recommendation, the trade-offs — under a section titled "What the
+  owner is being asked." It was written into a chat reply as prose; the
+  same board write covered `findings` and `checks` only. No `decisions`
+  entry. The owner: *"again you are not update the board to ask me about
+  M6 decision despite the M6 design is already done and waiting for me
+  to determinate."* The rule above had already fired correctly, twice,
+  on both completion events — this was never a diligence gap. Nothing
+  had ever told the agent that a *new* decision arriving inside a
+  deliverable needed routing to the board at all.)
 - **Always bump `writtenAt`.** Past 25 minutes the stamp turns amber and
   the owner can see the words are old. That is the point — never leave it
   unchanged to hide staleness.
