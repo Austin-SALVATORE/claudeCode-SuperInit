@@ -350,6 +350,23 @@ The machine half needs nothing. The judgement half is on you:
   same failure one level up: the lead told the owner it would re-cut a
   set of baselines, then did not, for hours, because that undertaking
   also lived nowhere but the reply that made it.)
+
+  **A `queued`/`open` row is named the way the owner would go looking
+  for it, not the way the work gets dispatched.** The lead thinks in
+  briefs — one row per teammate, one per piece of a feature — and writes
+  several rows. The owner thinks in features and searches for one name.
+  Both lists are complete and only one of them is findable. When a
+  feature is split across several rows, give the feature a row of its
+  own and let the pieces hang under it — in `note`, not as siblings with
+  no parent.
+
+  (3 Aug 2026: the Backlog rail held five constituent pieces of the M6
+  write path — the shared key, unforgeable replies, delete, "N new since
+  you last looked", the disclosure copy — and no row named "the write
+  path" itself. The owner asked where to find it, looked in exactly the
+  right place, and correctly concluded it was not there. All five pieces
+  had been filed correctly by the rule above; none were findable under
+  the name the owner would actually use.)
 - **Always bump `writtenAt`.** Past 25 minutes the stamp turns amber and
   the owner can see the words are old. That is the point — never leave it
   unchanged to hide staleness.
