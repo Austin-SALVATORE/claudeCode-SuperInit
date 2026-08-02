@@ -182,24 +182,41 @@ class Board:
         return None
 
     def backlog_view(self, narrative: dict) -> list[dict]:
-        """Owner-written items first, then whatever Claude parked, both aged."""
+        """Owner-written items first, then whatever Claude parked, both aged.
+
+        Two Claude-authored channels feed this one list: `open` (an item
+        that already has enough shape to name who it's waiting on) and
+        `queued` (known future work an agent named but deliberately did not
+        do — the skill's routing rule for a deliverable's "not in this
+        commit" section). They were always the same fact under two names:
+        something the owner needs to see without asking, not in flight, not
+        yet owned — and the field mapping already agreed before anything
+        used it (`row.get("who") or row.get("note")` accepts `queued`'s
+        shape unmodified). Found and fixed together, 3 Aug 2026: `queued`
+        was documented in the skill and rendered nowhere — every entry an
+        agent wrote there reached `report.json` and stopped. Folding it in
+        here, rather than giving it a second list next to this one, is the
+        fix for the whole shape of the defect, not just this instance of
+        it: one rail, so the owner checks one place.
+        """
         out = []
         for row in self.load_backlog():
             if row.get("state") == "done":
                 continue
             out.append({**row, "ageDays": age_days(row.get("createdAt"))})
-        for row in narrative.get("open", []):
-            out.append(
-                {
-                    "title": row.get("what", ""),
-                    "code": row.get("code"),
-                    "notes": row.get("who") or row.get("note"),
-                    "state": row.get("state", "unowned"),
-                    "kind": row.get("kind", "task"),
-                    "source": "claude",
-                    "ageDays": age_days(row.get("since")),
-                }
-            )
+        for key in ("open", "queued"):
+            for row in narrative.get(key, []):
+                out.append(
+                    {
+                        "title": row.get("what", ""),
+                        "code": row.get("code"),
+                        "notes": row.get("who") or row.get("note"),
+                        "state": row.get("state", "unowned"),
+                        "kind": row.get("kind", "task"),
+                        "source": "claude",
+                        "ageDays": age_days(row.get("since")),
+                    }
+                )
         return out
 
     # ── pipeline: commit-backed steps answer to git, not to me ────────

@@ -406,6 +406,26 @@ so a teammate's commit or a rewritten narrative appears on its own.
 }
 ```
 
+**`queued` and `open` are the same rail wearing two names.** Both render
+together in the **Backlog** panel — the same right-hand list the owner adds
+to directly with the page's own "+ Add" — grouped by state (`needs-triage`,
+`needs-you`, `ready`, `unverified`, `unowned`), aged, and shown alongside
+whatever the owner typed in. There is no separate "queued" section anywhere
+on the page; a `what`/`note` pair written to `queued` and a `what`/`who`
+pair written to `open` map onto the same fields (`who` wins over `note` if
+both are given) and land in the same list, defaulting to `unowned` if
+neither sets `state`. Use `queued` when routing a deliverable's deferred
+work per the rule above; use `open` when you already know who it is
+waiting on. Neither needs its own place to live — the Backlog panel is
+already that place, and it existed before either field did.
+
+(3 Aug 2026: `queued` was documented here and rendered nowhere. Every entry
+an agent wrote reached `report.json` and stopped — the board looked correct
+while quietly discarding the owner's backlog. Fixed by feeding both
+channels into the one list that already existed for `open`, rather than
+building `queued` a second list next to it: two sections meaning almost
+the same thing would have been the same defect in a new shape.)
+
 Backticks in any string render as inline code, and `**bold**` renders as
 emphasis — nothing else does. No italics, no links, no headings; anything
 outside these two gets read back as literal punctuation. A code span wins
