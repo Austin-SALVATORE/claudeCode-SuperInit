@@ -543,11 +543,36 @@ const tone = v => {
 
 // How old a thing is, in words. Machine facts never reach this — they are
 // re-derived per request — so anything shown here is judgement with an age.
+// Always a point in the past — "written 4 min ago", "started 4 min ago" —
+// which is why it always ends in "ago". Composing it after a preposition
+// that wants a plain span instead ("unconfirmed for 34 min ago") produces
+// broken English: see `duration` below, which exists for exactly that case
+// and must not be confused with this one.
 const ago = m => m == null ? null
   : m < 1.5 ? 'just now'
   : m < 60  ? `${Math.round(m)} min ago`
   : m < 1440 ? `${Math.round(m / 60)} h ago`
   : `${Math.round(m / 1440)} d ago`
+
+// A bare span of time, with the same buckets as `ago` but none of the "ago"
+// — for a sentence that already supplies the "for"/"waiting" that makes the
+// duration make sense on its own ("unconfirmed for 34 min", "waiting 5 h").
+// Shipped in 0.4.0 and inherited by the handoff chip as `${prefix}${ago(m)}`
+// for both the fresh and the stale prefix, which is only correct for the
+// fresh one ("started 4 min ago"). The stale one ("unconfirmed for",
+// "waiting") wants a duration, not a point in time, and "for 34 min ago" is
+// not English — found reading the *shipped* chip text during verification
+// of a different fix, missed by two earlier passes that both checked the
+// mechanism (does the number change) and not the words themselves.
+// `just now`'s duration form is not empty or "0 min": a config with none of
+// `ago`'s buckets skipped is worth less than one with the shortest bucket
+// worded badly, and "under a minute" is the shape every other duration in
+// this function already has (magnitude then unit), not a special case.
+const duration = m => m == null ? null
+  : m < 1.5 ? 'under a minute'
+  : m < 60  ? `${Math.round(m)} min`
+  : m < 1440 ? `${Math.round(m / 60)} h`
+  : `${Math.round(m / 1440)} d`
 
 // Minutes since an ISO timestamp, or null if absent/unparseable. Computed in
 // the browser on every poll, so it keeps ticking without the agent writing
@@ -590,6 +615,14 @@ const HANDOFF_STALE_AFTER_MIN = 240
 // each has its own threshold and its own before/after wording, because
 // "unconfirmed" reads as an accusation on a human errand and "waiting"
 // reads as too soft for a claim about whether an agent is still working.
+//
+// The fresh and stale prefixes take different grammar, not just different
+// words: "started"/"logged" name a point in the past, so they take `ago`
+// ("started 4 min ago"); "unconfirmed for"/"waiting" name a span, so they
+// take `duration`, with no "ago" ("unconfirmed for 34 min"). Picking the
+// wrong one for either prefix reads as broken English, not as a style
+// choice — "unconfirmed for 34 min ago" and "started 4 min" are the same
+// error in opposite directions.
 const AGE_KINDS = {
   inflight: { thresholdMin: UNCONFIRMED_AFTER_MIN, freshPrefix: 'started ', stalePrefix: 'unconfirmed for ' },
   handoff:  { thresholdMin: HANDOFF_STALE_AFTER_MIN, freshPrefix: 'logged ', stalePrefix: 'waiting ' },
@@ -599,7 +632,8 @@ function ageChipState(kind, since){
   if(m == null) return null
   const { thresholdMin, freshPrefix, stalePrefix } = AGE_KINDS[kind]
   const old = m > thresholdMin
-  return { old, text: `${old ? stalePrefix : freshPrefix}${ago(m)}` }
+  const text = old ? `${stalePrefix}${duration(m)}` : `${freshPrefix}${ago(m)}`
+  return { old, text }
 }
 
 // A picture, when prose cannot carry the thing.
