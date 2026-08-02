@@ -168,6 +168,14 @@
     color:var(--ink3);white-space:nowrap}
   .card .agechip.stale{color:var(--amber)}
   .card.unconfirmed{border-color:var(--amber);border-style:dashed}
+  /* A shot is evidence, not decoration: full width of its card, checkered so
+     a transparent or white-on-white capture is still visibly an image, and
+     clickable through to the original at full size. */
+  .shotlink{display:block;margin-top:11px}
+  .shot{display:block;width:100%;height:auto;border-radius:8px;
+    border:1px solid var(--line);background:
+      repeating-conic-gradient(#00000010 0% 25%, transparent 0% 50%) 50%/16px 16px}
+  .shotlink:hover .shot{border-color:var(--amber)}
 
   .ask{border-color:var(--amber);background:#22190e}
   /* An answered question stays visible so the loop is seen to close —
@@ -553,6 +561,25 @@ const minsSince = iso => {
 // cannot check.
 const UNCONFIRMED_AFTER_MIN = 20
 
+// A picture, when prose cannot carry the thing.
+//
+// The board's own rule is that anything structured belongs on the page rather
+// than in chat. A visual defect is the case where that rule was quietly
+// impossible to follow: the board could hold a careful description and a
+// filesystem path, and the reader still had to go and open the file. A
+// wrapping-text bug was described in three paragraphs and read as minor; one
+// screenshot made it obvious immediately. So the slot exists.
+//
+// `shot` is a bare filename living in the board's own shots/ directory — never
+// a path. See send_shot() in serve.py for why that is not a limitation but the
+// entire security model, and why it also stops boards rotting into broken
+// images when a session scratchpad is cleaned up.
+const shot = (name, alt) => name
+  ? `<a class="shotlink" href="shot/${encodeURIComponent(name)}" target="_blank" rel="noopener">
+       <img class="shot" src="shot/${encodeURIComponent(name)}" loading="lazy"
+            alt="${esc(alt || 'screenshot')}"></a>`
+  : ''
+
 const inFlightLabel = list => has(list) && list.some(x => {
   const m = minsSince(x.since)
   return m != null && m > UNCONFIRMED_AFTER_MIN
@@ -571,6 +598,7 @@ function cards(list, cls = ''){
     return `<div class="card ${cls}${old ? ' unconfirmed' : ''}">
     <div class="t">${x.sev ? `<span class="sev ${esc(x.sev)}"></span>` : ''}${md(x.what || x.title || '')}${age}</div>
     ${x.detail || x.d ? `<div class="d">${md(x.detail || x.d)}</div>` : ''}
+    ${shot(x.shot, x.what || x.title)}
     ${x.who ? `<div class="n">${md(x.who)}</div>` : ''}
     ${x.note ? `<div class="n">${md(x.note)}</div>` : ''}
   </div>`
@@ -733,6 +761,8 @@ function asks(list, project){
           ? '<span class="pick" data-copied="Copied ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
           : '<span></span>'}
         ${o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
+        ${o.shot ? `<img class="shot" src="shot/${encodeURIComponent(o.shot)}"
+            loading="lazy" alt="${esc(o.label)}">` : ''}
       </button>`
     }).join('')}<button class="opt other" data-rec="0" data-other="1"
         data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="">

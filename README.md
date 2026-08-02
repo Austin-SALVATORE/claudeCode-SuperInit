@@ -119,6 +119,24 @@ now*. The board still cannot see agents and still cannot know whether the
 claim is true. It can stop asserting something it has no way to check, and
 that is the whole of the fix.
 
+### A finding that is a picture
+
+Some defects cannot survive as prose. One was described here in three
+careful, measured paragraphs and read as minor; a single screenshot made
+it obvious in two seconds. Before that, the best the board could do was
+print a path and ask the reader to go and open it — falling back to prose
+wearing a filename.
+
+Cards and decision options take a `shot`: a **bare filename**, served from
+the board's own `shots/` directory. That is the whole security model
+rather than a limitation — there is no path to traverse because there is
+no path. The name is matched against a strict pattern, and containment is
+re-checked *after* resolution, because a symlink dropped into `shots/` is
+an escape the pattern cannot see. Both guards were attacked on purpose;
+the symlink case is caught only by the second one. It also fixes a
+lifetime problem: shots taken in a session scratchpad vanish with the
+session, so a board citing them rots into broken images.
+
 ### The answer path
 
 That second path was missing for a while, and the reason is the most

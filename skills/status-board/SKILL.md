@@ -393,6 +393,44 @@ gets typed into the reply instead — and the board silently stops being
 the place where things live. **A missing slot is a gap in the model, not
 a licence to fall back to prose.** Add the field.
 
+### If it is visual, it needs a picture, not a better paragraph
+
+The rule above has a failure mode it did not originally cover. Some
+findings are not *structured* — they are **visual**, and prose is not a
+worse container for them, it is the wrong one. A wrapping-text defect was
+once described here in three careful, measured paragraphs and read as
+minor; one screenshot made it obvious in two seconds. The board could
+hold the description and a filesystem path, and the reader still had to
+go and open the file — which is falling back to prose wearing a filename.
+
+So `shot` is a field on **any card** (`findings`, `inFlight`, `queued`,
+`open`) and on **any decision option**:
+
+```jsonc
+"findings": [{ "sev": "high", "title": "…", "detail": "…",
+               "shot": "ribbon-390.png" }],
+"decisions": [{ "q": "Which treatment?", "options": [
+   { "label": "A — ghost pills", "recommend": true, "why": "…",
+     "shot": "candidate-a.png" }] }]
+```
+
+**`shot` is a bare filename, never a path**, and the file lives in
+`~/.claude/status-board/boards/<slug>/shots/`. Copy it there; do not
+reference the scratchpad. Two reasons, and both are the point rather than
+a limitation:
+
+- The server serves only that one directory, matches the name against a
+  strict pattern, and re-checks containment *after* resolving — because a
+  symlink dropped into `shots/` is an escape the pattern cannot see. There
+  is no path to traverse because there is no path.
+- Session scratchpads are deleted. A board citing one rots into broken
+  images; a board owning its shots keeps them exactly as long as the words
+  that cite them.
+
+**Take the screenshot whenever you would otherwise write "open this file
+and look".** If you found a defect by looking at something, the owner will
+need to look at it too, and describing it better is not a substitute.
+
 `handoffs` is the slot for content the owner must carry to someone
 else — a coach, a colleague, another tool:
 

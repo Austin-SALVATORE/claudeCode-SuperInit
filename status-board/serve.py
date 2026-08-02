@@ -43,6 +43,7 @@ import zlib
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
 HERE = Path(__file__).resolve().parent
 PORT_BASE, PORT_SPAN = 8800, 120
@@ -582,8 +583,11 @@ def make_handler(board: Board, token: str | None = None):
             # query string, keep working after the first load.
             if token and "k=" in (self.path or ""):
                 self._set_cookie = True
-            if self.path.split("?")[0].rstrip("/") in ("/report.json", "/report"):
+            route = self.path.split("?")[0].rstrip("/")
+            if route in ("/report.json", "/report"):
                 return self.send_report()
+            if route.startswith("/shot/"):
+                return self.send_shot(route[len("/shot/") :])
             return super().do_GET()
 
         def do_POST(self):  # noqa: N802 - stdlib naming
@@ -623,6 +627,68 @@ def make_handler(board: Board, token: str | None = None):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        # Images the board owns, and the only ones it will ever serve.
+        #
+        # A finding that is fundamentally visual cannot survive as prose. The
+        # board learned this the expensive way: a wrapping-text defect was
+        # described in three careful paragraphs and read as minor, then a
+        # single screenshot made it obvious in two seconds. Before this
+        # endpoint the best the board could do was print a filesystem path and
+        # ask the reader to go and open it — which is the "fall back to prose"
+        # failure its own rules warn about, wearing a filename.
+        #
+        # Deliberately NOT a general file server. Two reasons, both learned
+        # from how this would go wrong:
+        #
+        #   * Path traversal. Serving arbitrary paths from a query string,
+        #     even on loopback, is the classic hole. Here there is no path to
+        #     traverse: the name is a single filename, matched against a strict
+        #     pattern, resolved inside one directory the board owns, and the
+        #     resolved result is re-checked to be inside it — belt and braces,
+        #     because a symlink placed in shots/ would otherwise escape.
+        #   * Lifetime. Shots taken in a session scratchpad vanish when the
+        #     session does, so a board referencing them would rot into broken
+        #     images. Living beside narrative.json, they last exactly as long
+        #     as the words that cite them.
+        SHOT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+        SHOT_TYPES = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }
+
+        def send_shot(self, name: str):
+            name = unquote(name)
+            root = (board.dir / "shots").resolve()
+            suffix = Path(name).suffix.lower()
+            if (
+                not self.SHOT_NAME.match(name)
+                or name.startswith(".")
+                or suffix not in self.SHOT_TYPES
+            ):
+                return self.send_error(404, "no such shot")
+            try:
+                path = (root / name).resolve()
+                # Re-check after resolution: the pattern above already forbids
+                # slashes and dots-only names, but a symlink inside shots/ is
+                # a path the pattern cannot see.
+                path.relative_to(root)
+                body = path.read_bytes()
+            except (OSError, ValueError):
+                return self.send_error(404, "no such shot")
+            self.send_response(200)
+            self.send_header("Content-Type", self.SHOT_TYPES[suffix])
+            self.send_header("Content-Length", str(len(body)))
+            # Images are immutable once written; a changed shot gets a new
+            # name, so the narrative citing it changes in the same edit.
+            self.send_header("Cache-Control", "private, max-age=300")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
