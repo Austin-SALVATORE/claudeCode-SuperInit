@@ -247,6 +247,66 @@
   @keyframes pop{0%{transform:scale(1)}45%{transform:scale(1.12)}100%{transform:scale(1)}}
   @media(prefers-reduced-motion:reduce){.opt.copied .pick{animation:none}}
 
+  /* ── image-bearing decisions: look, then choose ─────────────────
+     An option carrying `shot` used to render its preview INSIDE the
+     button that records the answer — so examining it and choosing it
+     were the same click. Split in two: a review list above (shot links
+     out, never embeds a clickable preview inside a recording target)
+     and a labelled choice row below. The identifier (a plain digit,
+     matching the numbering `questionText` already puts in the copied
+     clipboard text) appears in both places, so "option 2" means the
+     same thing whether the reader is looking at the picture or the
+     button. Text-only decisions never take this path — see `asks()`. */
+  .optid{display:inline-grid;place-items:center;flex:none;min-width:22px;
+    height:22px;padding:0 2px;border-radius:50%;background:var(--raised);
+    border:1px solid var(--line2);font:600 11.5px/1 var(--mono);color:var(--ink2)}
+  .optid.rec{border-color:var(--amber);color:var(--amber)}
+
+  .optreview{list-style:none;margin:14px 0 0;padding:0;display:flex;
+    flex-direction:column;gap:16px}
+  .optreview li{display:flex;gap:11px;align-items:flex-start}
+  .optreview .optid{margin-top:1px}
+  .optreview-body{min-width:0;flex:1}
+  .optreview-lab{font:14.5px/1.4 var(--sans);color:var(--ink)}
+  .rectag{margin-left:8px;font:600 9.5px/1 var(--mono);letter-spacing:.1em;
+    text-transform:uppercase;color:var(--amber);border:1px solid var(--amber);
+    border-radius:20px;padding:3px 7px;white-space:nowrap}
+  .optreview .rsn{margin-top:4px}
+
+  /* A bounded, UNIFORM box, not a faithful scaled render — these images
+     (multi-page comparison sheets, several thousand px wide) are
+     illegible at any inline size, so the thumbnail's job is identification,
+     not review. Same box for every option in a card: a list of choices
+     that all read the same height, not a gallery whose scroll cost varies
+     with each image's aspect ratio. `object-fit:cover` crops rather than
+     squashes, so identity (which one is this) survives even if the crop
+     loses detail — the reader compares that against the full image behind
+     the link, not against this box. */
+  .optshotlink{position:relative;display:inline-block;margin-top:10px;
+    border-radius:8px}
+  .optshot{display:block;width:168px;height:104px;object-fit:cover;
+    border-radius:8px;border:1px solid var(--line);background:
+      repeating-conic-gradient(#00000010 0% 25%, transparent 0% 50%) 50%/16px 16px}
+  .optshotlink:hover .optshot{border-color:var(--amber)}
+  /* Opens in a new tab (rel="noopener", same as `shot()`) — the reader's
+     place on THIS tab is never disturbed, which is the whole answer to
+     "must not lose their place" for the look/back/compare round trip. */
+  .optshot-badge{position:absolute;top:6px;left:6px;display:inline-grid;
+    place-items:center;min-width:20px;height:20px;padding:0 5px;
+    border-radius:20px;background:rgba(10,8,6,.78);color:#f2ede6;
+    font:600 11px/1 var(--mono);border:1px solid rgba(255,255,255,.28)}
+  .optshot-badge.rec{background:var(--amber);color:#1c1509;border-color:var(--amber)}
+
+  .choicerow{margin-top:16px}
+  .choicerow-label{margin:0 0 8px;font:600 10px/1 var(--mono);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink3)}
+  /* Same `.opt` button as a text-only decision uses — same click handler,
+     same recommended-pill exemption, same confirm-on-divergence gate.
+     Only the icon column differs: the decorative "↩" is replaced with the
+     real `.optid` badge, so what recorded the answer is legible on its own
+     even scrolled away from the review list above it. */
+  .opt.idbtn::before{content:none}
+
   /* Diverging from the recommendation is confirmed on the page, not trusted
      to a stray tap. The recommended option is exempt: agreeing with a stated
      analysis needs no second signal. */
@@ -851,12 +911,72 @@ const questionText = (project, q) => [
   }),
 ].join('\n').trim()
 
+// An image-bearing decision splits looking from choosing. `optReview` is
+// pure information — nothing in it records an answer, so nothing in it
+// needs a confirmation gate. `choiceButtons` is where a tap acts, and reuses
+// `.opt` unchanged (same class the text-only path uses) so the existing
+// click handler, the recommended-pill exemption and the divergence dialog
+// all keep working without a single line of JS changing for this case. The
+// only visual difference on the button is the icon column: `.opt.idbtn`
+// swaps the decorative "↩" for the real `.optid` digit, so the answer that
+// got recorded is still legible on its own, scrolled away from the picture
+// that explained it.
+function optReview(opts){
+  return `<ol class="optreview">${opts.map((raw, i) => {
+    const o = typeof raw === 'string' ? { label: raw } : raw
+    const id = i + 1
+    return `<li>
+      <span class="optid${o.recommend ? ' rec' : ''}">${id}</span>
+      <div class="optreview-body">
+        <div class="optreview-lab">${md(o.label)}${o.recommend ? '<span class="rectag">Recommended</span>' : ''}</div>
+        ${o.why ? `<div class="rsn">${md(o.why)}</div>` : ''}
+        ${o.shot ? `<a class="optshotlink" href="shot/${encodeURIComponent(o.shot)}" target="_blank" rel="noopener">
+          <img class="optshot" src="shot/${encodeURIComponent(o.shot)}" loading="lazy" alt="${esc(o.label)}">
+          <span class="optshot-badge${o.recommend ? ' rec' : ''}">${id}</span>
+        </a>` : ''}
+      </div>
+    </li>`
+  }).join('')}</ol>`
+}
+
+function choiceButtons(q, opts, project){
+  return `<div class="opts">${opts.map((raw, i) => {
+    const o = typeof raw === 'string' ? { label: raw } : raw
+    return `<button class="opt idbtn${o.recommend ? ' rec' : ''}"
+        data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="${esc(o.label)}"
+        data-rec="${o.recommend ? '1' : '0'}">
+      <span class="optid${o.recommend ? ' rec' : ''}">${i + 1}</span>
+      <span class="lab">${md(o.label)}</span>
+      ${o.recommend
+        ? '<span class="pick" data-copied="Copied ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
+        : '<span></span>'}
+    </button>`
+  }).join('')}<button class="opt other" data-rec="0" data-other="1"
+      data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="">
+    <span class="lab">Something else — let me write it</span>
+    <span></span>
+    <span class="rsn">None of these fit, or the real answer is a
+      qualification rather than a choice.</span>
+  </button></div>`
+}
+
 function asks(list, project){
   if(!has(list)) return ''
-  return list.map((q, qi) => `<div class="card ask">
+  return list.map((q, qi) => {
+    const opts = authoredOptions(q)
+    const hasShots = opts.some(raw => (typeof raw === 'string' ? null : raw)?.shot)
+    if(!hasShots){
+      // Verbatim from before image-bearing decisions got a second layout —
+      // not refactored to share code with the branch below, on purpose:
+      // sharing a template across two different indentation contexts is
+      // exactly how "semantically the same" quietly stops being "the same
+      // bytes". A text-only decision must render identically to what
+      // shipped before this redesign, so this stays a literal copy rather
+      // than a call through a shared helper.
+      return `<div class="card ask">
     <div class="t">${md(q.q)}</div>
     ${q.why ? `<div class="d">${md(q.why)}</div>` : ''}
-    <div class="opts">${authoredOptions(q).map(raw => {
+    <div class="opts">${opts.map(raw => {
       const o = typeof raw === 'string' ? { label: raw } : raw
       // Question and answer ride as separate attributes and are joined on
       // click — a newline inside an HTML attribute does not survive reliably.
@@ -868,8 +988,6 @@ function asks(list, project){
           ? '<span class="pick" data-copied="Copied ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
           : '<span></span>'}
         ${o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
-        ${o.shot ? `<img class="shot" src="shot/${encodeURIComponent(o.shot)}"
-            loading="lazy" alt="${esc(o.label)}">` : ''}
       </button>`
     }).join('')}<button class="opt other" data-rec="0" data-other="1"
         data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="">
@@ -878,8 +996,21 @@ function asks(list, project){
       <span class="rsn">None of these fit, or the real answer is a
         qualification rather than a choice.</span>
     </button></div>
-    <button class="copyq" data-question="${qi}">Copy the question with all ${authoredOptions(q).length} options</button>
-  </div>`).join('')
+    <button class="copyq" data-question="${qi}">Copy the question with all ${opts.length} options</button>
+  </div>`
+    }
+    // Image-bearing: look, then choose — see optReview()/choiceButtons() above.
+    return `<div class="card ask">
+    <div class="t">${md(q.q)}</div>
+    ${q.why ? `<div class="d">${md(q.why)}</div>` : ''}
+    ${optReview(opts)}
+    <div class="choicerow">
+      <p class="choicerow-label">Your choice</p>
+      ${choiceButtons(q, opts, project)}
+    </div>
+    <button class="copyq" data-question="${qi}">Copy the question with all ${opts.length} options</button>
+  </div>`
+  }).join('')
 }
 
 // Plain text for a human who has never seen this board — no project tag, no
