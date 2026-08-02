@@ -596,7 +596,38 @@ function initRails(){
 }
 
 const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
-const md  = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>')
+// Two rules, applied to text that is ALREADY escaped — every character this
+// function inserts into the DOM is either a literal tag we wrote ourselves
+// (`<code>`, `<strong>`) or a captured group of already-`esc()`-ed content.
+// $1 can never contain a raw `<`, `>` or `&` — esc() ran first, over the
+// whole string, before either pattern gets to see it — so there is no
+// position in the output where captured text can close a tag early or open
+// a new one. A narrative string containing a literal `<script>` becomes
+// inert text reading "<script>" on the page, bolded or coded like anything
+// else, never a real element.
+//
+// Code spans are parsed FIRST and their content is placeholder-protected
+// before the bold pattern ever runs, so `` `a ** glob **` `` cannot have its
+// asterisks read as emphasis — same rule every other markdown implementation
+// uses (a code span's content is literal to every other rule), and the
+// concrete case this project actually writes: shell globs and CSS asterisks
+// inside backticked spans, which would otherwise silently turn into bold
+// mid-command. The placeholder is restored after the bold pass runs, so a
+// code span always wins the argument over what it contains.
+const md = s => {
+  // A NUL char can't occur in text an agent authors into JSON, so it is a
+  // safe placeholder delimiter — built via fromCharCode rather than typed as
+  // a literal escape, and never a plain string like a space or a digit,
+  // which ordinary prose ("step 0", a decimal) could collide with.
+  const NUL = String.fromCharCode(0)
+  const spans = []
+  const withPlaceholders = esc(s).replace(/`([^`]+)`/g, (_, inner) => {
+    spans.push(inner)
+    return NUL + (spans.length - 1) + NUL
+  })
+  const bolded = withPlaceholders.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+  return bolded.replace(new RegExp(NUL + '(\\d+)' + NUL, 'g'), (_, i) => `<code>${spans[+i]}</code>`)
+}
 const has = a => Array.isArray(a) && a.length
 const block = (label, inner) => inner ? `<div class="block"><p class="eyebrow">${esc(label)}</p>${inner}</div>` : ''
 

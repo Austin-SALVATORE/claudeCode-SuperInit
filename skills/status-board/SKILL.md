@@ -366,7 +366,12 @@ so a teammate's commit or a rewritten narrative appears on its own.
 }
 ```
 
-Backticks in any string render as inline code.
+Backticks in any string render as inline code, and `**bold**` renders as
+emphasis — nothing else does. No italics, no links, no headings; anything
+outside these two gets read back as literal punctuation. A code span wins
+over bold when they overlap: `` `a ** glob **` `` keeps its asterisks
+literal, so a shell glob or a CSS value inside backticks is never quietly
+half-bolded.
 
 **`headline` is a display line, not a paragraph.** It sets at 27px across
 the full content column, so one clause of roughly 60 characters fills a
