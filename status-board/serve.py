@@ -242,16 +242,44 @@ class Board:
         except (OSError, ValueError):
             return {}
 
+    # The owner's answer is the one thing on this board that exists nowhere
+    # else — a stale headline gets rewritten, a wrong count gets re-measured,
+    # but a ruling typed here has no other copy. 20,000 characters is not a
+    # rendering limit or a real constraint of anything: it is a backstop
+    # against a catastrophic accidental paste (a whole log file, a whole
+    # document) silently bloating answers.json forever, sized generously past
+    # anything a considered written ruling would ever reach — several
+    # paragraphs, in any of the languages this board is answered in, is a few
+    # thousand characters at most. `len()` on a Python str counts Unicode
+    # code points, not bytes, so this cap is the same size in English or in
+    # CJK text; it does not shrink for scripts that use more bytes per
+    # character. Found because the real limit used to be 500: an owner's
+    # multi-paragraph ruling was cut mid-sentence with no mark that anything
+    # was missing, and it went unnoticed because every other stored answer
+    # happened to be under 120 characters. If this cap is ever hit for real,
+    # it must be visible, never silent — see `truncated`/`originalLength`
+    # below, both carried through to the board by `split_decisions`.
+    ANSWER_MAX_CHARS = 20_000
+    # The question, by contrast, is always the agent's own short title —
+    # never the owner's free text — so the original 500-character cap stays;
+    # it was never the field that lost anything.
+    QUESTION_MAX_CHARS = 500
+
     def record_answer(self, question: str, answer: str) -> dict:
         question, answer = str(question).strip(), str(answer).strip()
         if not question or not answer:
             raise ValueError("An answer needs both a question and a choice.")
         rows = self.load_answers()
+        truncated = len(answer) > self.ANSWER_MAX_CHARS
         entry = {
-            "answer": answer[:500],
+            "answer": answer[: self.ANSWER_MAX_CHARS],
             "at": datetime.now(timezone.utc).astimezone().isoformat(),
         }
-        rows[question[:500]] = entry
+        if truncated:
+            entry["truncated"] = True
+            entry["originalLength"] = len(answer)
+            entry["truncatedAt"] = self.ANSWER_MAX_CHARS
+        rows[question[: self.QUESTION_MAX_CHARS]] = entry
         tmp = self.answers.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
         tmp.replace(self.answers)
@@ -268,14 +296,19 @@ class Board:
         for d in narrative.get("decisions", []):
             hit = recorded.get(d.get("q", ""))
             if hit:
-                answered.append(
-                    {
-                        "q": d["q"],
-                        "chose": hit["answer"],
-                        "note": "Recorded from the board. Not yet folded into my report.",
-                        "when": hit["at"][11:16],
-                    }
-                )
+                entry = {
+                    "q": d["q"],
+                    "chose": hit["answer"],
+                    "note": "Recorded from the board. Not yet folded into my report.",
+                    "when": hit["at"][11:16],
+                }
+                # Carried through, never dropped here: a truncated answer is
+                # still truncated on the board, not just in the file on disk.
+                if hit.get("truncated"):
+                    entry["truncated"] = True
+                    entry["originalLength"] = hit["originalLength"]
+                    entry["truncatedAt"] = hit["truncatedAt"]
+                answered.append(entry)
             else:
                 pending.append(d)
         return pending, answered + narrative.get("answered", [])

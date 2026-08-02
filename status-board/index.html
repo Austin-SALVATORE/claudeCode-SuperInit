@@ -182,9 +182,28 @@
      a decision that silently vanishes reads as a decision that was lost. */
   .done{border-color:#3d5236}
   .done .t{color:var(--ink2);font-weight:500}
-  .done .chose{display:flex;align-items:baseline;gap:9px;margin-top:8px;
+  /* flex-start, not baseline: baseline alignment anchors to the first line
+     only, which reads fine for a short answer but leaves the checkmark
+     floating away from a multi-paragraph one. pre-wrap keeps the owner's own
+     line breaks — the alternative, letting normal whitespace collapsing eat
+     them, turns several paragraphs into one run-on line silently, which is
+     the same shape of loss as the truncation this exists next to. */
+  .done .chose{display:flex;align-items:flex-start;gap:9px;margin-top:8px;
     font:15px/1.4 var(--sans);color:var(--ink)}
-  .done .chose::before{content:"✓";color:var(--green);font:13px var(--mono)}
+  .done .chose::before{content:"✓";color:var(--green);font:13px var(--mono);
+    margin-top:2px}
+  /* min-width:0 on the text itself, not just the flex container: a flex
+     item's default min-width is its content's min-content size, and text
+     with no wrap opportunity (a long URL, a hash, CJK with no spaces) would
+     rather overflow the card than shrink below that — this is the one line
+     that stops it. overflow-wrap is the same guarantee for the rare word
+     that is still too long to wrap normally. */
+  .chosetxt{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+  /* Same visual language as .card.unconfirmed's dashed amber border: doubt
+     the reader should see without reading the words. This one says the text
+     above it is known incomplete, not just possibly stale. */
+  .done .trunc{color:var(--amber);font-size:12.5px;margin-top:7px;
+    padding:6px 9px;border:1px dashed var(--amber);border-radius:8px}
   .done .when{font:11px var(--mono);color:var(--ink3);margin-top:6px;
     letter-spacing:.05em}
   .ask .t{font-size:16px}
@@ -1022,7 +1041,10 @@ function render(r){
     // Decided folds soonest — it only grows, and it is history, not work.
     fold('Decided', (r.answered || []).map(a => `<div class="card done">
       <div class="t">${md(a.q)}</div>
-      <div class="chose">${md(a.chose)}</div>
+      <div class="chose"><span class="chosetxt">${md(a.chose)}</span></div>
+      ${a.truncated ? `<div class="trunc">⚠ cut at ${esc(String(a.truncatedAt))} of
+        ${esc(String(a.originalLength))} characters — this is not the whole
+        answer, read it from <code>answers.json</code></div>` : ''}
       ${a.note ? `<div class="n">${md(a.note)}</div>` : ''}
       ${a.when ? `<div class="when">${esc(a.when)}</div>` : ''}
     </div>`).join(''), n('answered'), { openBelow: 1 })
