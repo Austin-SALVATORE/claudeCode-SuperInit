@@ -301,6 +301,12 @@
     background:var(--raised);color:var(--ink);border:1px solid var(--line2);
     font:600 14px var(--sans);cursor:pointer}
   .ho .send:hover{border-color:var(--blue)}
+  /* A resolved handoff reads as done, not as a quieter version of
+     outstanding — same green the answered-decision card already uses, and
+     it must win over `.ho`'s own blue border despite arriving later in the
+     cascade at equal specificity, so it is named explicitly rather than
+     left to source order. */
+  .ho.done{border-color:#3d5236}
 
   .sev{display:inline-block;width:7px;height:7px;border-radius:50%;
     margin-right:9px;vertical-align:.12em;flex:none}
@@ -785,11 +791,45 @@ const handoffText = h => [
   ...(h.flag ? ['', h.flag] : []),
 ].join('\n').trim()
 
+// A handoff was the one section with no way to become false and no way to
+// become finished — present-tense ("you still need to carry this"), with no
+// `since`, no ageing, no resolved state. Everything else on the page is
+// either derived per request (cannot go stale) or dated (visibly ages) or
+// explicitly resolved (`decisions` -> `answered`, so a question cannot
+// silently vanish or silently persist). This closes the same gap for an
+// errand: `h.since` ages it live, the same mechanism as `inFlight`, and
+// `h.resolved` lets it be finished without deleting the card — same
+// argument as `answered`: a completed errand that just disappears reads as
+// one that was lost, and the owner cannot tell whether it registered.
+//
+// A handoff waiting hours, not minutes, is unremarkable — it is a human
+// errand, not a running process, and "still on my list" is a normal state
+// for most of a day. 4 hours is chosen as roughly half a working day: long
+// enough that a same-day deploy-checklist handoff has clearly had time to
+// be carried, short enough to still catch one forgotten by evening.
+const HANDOFF_STALE_AFTER_MIN = 240
+
 function handoffs(list){
   if(!has(list)) return ''
-  return list.map((h, idx) => `<div class="card ho">
+  return list.map((h, idx) => {
+    if(h.resolved){
+      return `<div class="card ho done">
+        <div class="to">For ${esc(h.to || 'someone else')}</div>
+        <div class="t">${md(h.subject || '')}</div>
+        <div class="chose">${md(h.resolved.note || 'Done')}</div>
+        ${h.resolved.when ? `<div class="when">${esc(h.resolved.when)}</div>` : ''}
+      </div>`
+    }
+    // `since` is optional (old boards have handoffs with neither field),
+    // so an absent one makes no age claim at all — same rule as inFlight's
+    // `minsSince`, and for the same reason: silence beats a wrong guess.
+    const m = minsSince(h.since)
+    const old = m != null && m > HANDOFF_STALE_AFTER_MIN
+    const age = m == null ? ''
+      : `<span class="agechip${old ? ' stale' : ''}">${old ? 'waiting ' : 'logged '}${esc(ago(m))}</span>`
+    return `<div class="card ho${old ? ' unconfirmed' : ''}">
     <div class="to">For ${esc(h.to || 'someone else')}</div>
-    <div class="t">${md(h.subject || '')}</div>
+    <div class="t">${md(h.subject || '')}${age}</div>
     ${h.why ? `<div class="d">${md(h.why)}</div>` : ''}
     <ol>${(h.points || []).map(p => `<li><div>
       <div class="pt">${md(p.q)}</div>
@@ -797,7 +837,8 @@ function handoffs(list){
     </div></li>`).join('')}</ol>
     ${h.flag ? `<div class="flag">${md(h.flag)}</div>` : ''}
     <button class="send" data-handoff="${idx}">Copy as a message</button>
-  </div>`).join('')
+  </div>`
+  }).join('')
 }
 
 // The ticking parts, refreshed every poll without touching anything the

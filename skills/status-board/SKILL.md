@@ -440,7 +440,8 @@ else — a coach, a colleague, another tool:
   "subject": "One line naming what this is",
   "why": "Why they are being asked, and what is blocked on the answer",
   "points": [ { "q": "Short label", "detail": "The substance." } ],
-  "flag": "The one point worth their attention most."       // optional
+  "flag": "The one point worth their attention most.",      // optional
+  "since": "2026-08-02T14:00:00+02:00"                      // optional, see below
 }]
 ```
 
@@ -449,6 +450,50 @@ project tag and no arrows** — it is going to a human who has never seen
 this board, not back into a CLI. That is the opposite of the decision
 copy, which is deliberately machine-tagged because it comes back to you.
 Numbering is real here: the owner and the recipient will say "point 2".
+
+**Stamp a handoff with `since` when you log it, and resolve it when the
+owner tells you it is done** — the same two-part fix `inFlight` already
+has, for the same reason. A handoff was the one section with no way to
+become false and no way to become finished: present-tense ("you still
+need to carry this"), no `since`, no ageing, no resolved state — every
+other field on the page is either re-derived per request (cannot go
+stale) or dated (visibly ages) or explicitly resolved (`decisions` ->
+`answered`, so a question cannot silently vanish or silently persist).
+`handoffs` was none of those, which is why a spent deploy checklist sat
+on the board reading as an outstanding errand days after the owner had
+already carried it and already ruled on the one open question inside
+it.
+
+```jsonc
+"handoffs": [{
+  "to": "your coach",
+  "subject": "One line naming what this is",
+  "points": [ { "q": "Short label" } ],
+  "resolved": {
+    "when": "2026-08-02T19:19:00+02:00",
+    "note": "What happened — optional, defaults to \"Done\""
+  }
+}]
+```
+
+- **Resolve it, do not delete it.** Same argument as `answered`: a
+  completed errand that just disappears from the board reads as one
+  that was lost, and the owner cannot tell whether it registered. A
+  resolved handoff renders as a closed card — no points, no copy
+  button, nothing that reads as outstanding — but it stays visible.
+- **`since` ages live in the browser**, exactly like `inFlight`'s: past
+  4 hours with no resolution the card turns amber and dashed and its
+  chip changes from "logged 40 min ago" to "waiting 5 h ago". 4 hours,
+  not `inFlight`'s 20 minutes, because a handoff is a human errand, not
+  a running process — "still on my list" is a normal state for most of
+  a day, and the threshold is roughly half a working day: long enough
+  that a same-day checklist has clearly had time to be carried, short
+  enough to still catch one forgotten by evening.
+- **Both fields are optional, and a handoff with neither is still
+  correct** — it just makes no age claim and can only be cleared by
+  removing it. Do not backfill `since` onto an old handoff you cannot
+  actually date; a wrong guess is worse than no claim at all, same rule
+  as everywhere else on this board.
 
 ## Rules
 
