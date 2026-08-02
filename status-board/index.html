@@ -513,7 +513,14 @@ const block = (label, inner) => inner ? `<div class="block"><p class="eyebrow">$
 // the live work off the screen. "Needs you" is never foldable — the one thing
 // that must always be visible is the thing being asked of you.
 const FOLD_OVER = 3
-function fold(label, inner, count, { never = false, openBelow = FOLD_OVER } = {}){
+// `id`, when given, is a stable target for tickAges() to patch this
+// section's own heading later without a full rebuild — separate from
+// `label`, which changes text when the section's claim ages (inFlightLabel)
+// and cannot itself be a stable lookup key. Every other section omits `id`
+// and renders exactly as before: the wrapper span only appears when there
+// is something outside a real render() that might need to reach in and
+// change this heading's words.
+function fold(label, inner, count, { never = false, openBelow = FOLD_OVER, id = null } = {}){
   if(!inner) return ''
   if(never) return `<div class="block"><p class="eyebrow">${esc(label)}</p>${inner}</div>`
   const key = 'board.open.' + label
@@ -521,8 +528,9 @@ function fold(label, inner, count, { never = false, openBelow = FOLD_OVER } = {}
   try { stored = localStorage.getItem(key) } catch (e) {}
   // Remembered choice wins; otherwise short sections open, long ones fold.
   const open = stored === null ? count <= openBelow : stored === '1'
-  return `<details class="sec"${open ? ' open' : ''} data-sec="${esc(label)}">
-    <summary>${esc(label)}${count ? `<span class="n">${count}</span>` : ''}</summary>
+  const labelHtml = id ? `<span class="sec-label">${esc(label)}</span>` : esc(label)
+  return `<details class="sec"${open ? ' open' : ''} data-sec="${esc(label)}"${id ? ` id="sec-${esc(id)}"` : ''}>
+    <summary>${labelHtml}${count ? `<span class="n">${count}</span>` : ''}</summary>
     ${inner}</details>`
 }
 
@@ -567,6 +575,33 @@ const minsSince = iso => {
 // cannot check.
 const UNCONFIRMED_AFTER_MIN = 20
 
+// A handoff waiting hours, not minutes, is unremarkable — it is a human
+// errand, not a running process, and "still on my list" is a normal state
+// for most of a day. 4 hours is chosen as roughly half a working day: long
+// enough that a same-day deploy-checklist handoff has clearly had time to
+// be carried, short enough to still catch one forgotten by evening.
+const HANDOFF_STALE_AFTER_MIN = 240
+
+// One source of truth for an age chip's text and staleness, used both when
+// building the initial HTML (cards/handoffs) and when a chip already on the
+// page is patched in place with the time that has passed since (tickAges,
+// below) — so the two paths cannot drift into disagreeing about a threshold
+// or a word. `kind` selects which of the two claims this chip is making;
+// each has its own threshold and its own before/after wording, because
+// "unconfirmed" reads as an accusation on a human errand and "waiting"
+// reads as too soft for a claim about whether an agent is still working.
+const AGE_KINDS = {
+  inflight: { thresholdMin: UNCONFIRMED_AFTER_MIN, freshPrefix: 'started ', stalePrefix: 'unconfirmed for ' },
+  handoff:  { thresholdMin: HANDOFF_STALE_AFTER_MIN, freshPrefix: 'logged ', stalePrefix: 'waiting ' },
+}
+function ageChipState(kind, since){
+  const m = minsSince(since)
+  if(m == null) return null
+  const { thresholdMin, freshPrefix, stalePrefix } = AGE_KINDS[kind]
+  const old = m > thresholdMin
+  return { old, text: `${old ? stalePrefix : freshPrefix}${ago(m)}` }
+}
+
 // A picture, when prose cannot carry the thing.
 //
 // The board's own rule is that anything structured belongs on the page rather
@@ -596,12 +631,13 @@ function cards(list, cls = ''){
   return list.map(x => {
     // `since` on an in-flight entry is when the work was said to have started.
     // Falls back to nothing for every other card type, which are past-tense
-    // and do not need it.
-    const m = minsSince(x.since)
-    const old = m != null && m > UNCONFIRMED_AFTER_MIN
-    const age = m == null ? ''
-      : `<span class="agechip${old ? ' stale' : ''}">${old ? 'unconfirmed for ' : 'started '}${esc(ago(m))}</span>`
-    return `<div class="card ${cls}${old ? ' unconfirmed' : ''}">
+    // and do not need it. `data-since`/`data-kind` are what let tickAges()
+    // (below) find and re-date this exact chip later without a full rebuild.
+    const state = ageChipState('inflight', x.since)
+    const age = state
+      ? `<span class="agechip${state.old ? ' stale' : ''}" data-since="${esc(x.since)}" data-kind="inflight">${esc(state.text)}</span>`
+      : ''
+    return `<div class="card ${cls}${state?.old ? ' unconfirmed' : ''}">
     <div class="t">${x.sev ? `<span class="sev ${esc(x.sev)}"></span>` : ''}${md(x.what || x.title || '')}${age}</div>
     ${x.detail || x.d ? `<div class="d">${md(x.detail || x.d)}</div>` : ''}
     ${shot(x.shot, x.what || x.title)}
@@ -801,13 +837,9 @@ const handoffText = h => [
 // `h.resolved` lets it be finished without deleting the card — same
 // argument as `answered`: a completed errand that just disappears reads as
 // one that was lost, and the owner cannot tell whether it registered.
-//
-// A handoff waiting hours, not minutes, is unremarkable — it is a human
-// errand, not a running process, and "still on my list" is a normal state
-// for most of a day. 4 hours is chosen as roughly half a working day: long
-// enough that a same-day deploy-checklist handoff has clearly had time to
-// be carried, short enough to still catch one forgotten by evening.
-const HANDOFF_STALE_AFTER_MIN = 240
+// (HANDOFF_STALE_AFTER_MIN's own value and reasoning live next to
+// UNCONFIRMED_AFTER_MIN, above — both thresholds feed the one shared
+// ageChipState() helper, so they are declared together.)
 
 function handoffs(list){
   if(!has(list)) return ''
@@ -823,11 +855,13 @@ function handoffs(list){
     // `since` is optional (old boards have handoffs with neither field),
     // so an absent one makes no age claim at all — same rule as inFlight's
     // `minsSince`, and for the same reason: silence beats a wrong guess.
-    const m = minsSince(h.since)
-    const old = m != null && m > HANDOFF_STALE_AFTER_MIN
-    const age = m == null ? ''
-      : `<span class="agechip${old ? ' stale' : ''}">${old ? 'waiting ' : 'logged '}${esc(ago(m))}</span>`
-    return `<div class="card ho${old ? ' unconfirmed' : ''}">
+    // `data-since`/`data-kind` are what let tickAges() re-date this exact
+    // chip later without a full rebuild.
+    const state = ageChipState('handoff', h.since)
+    const age = state
+      ? `<span class="agechip${state.old ? ' stale' : ''}" data-since="${esc(h.since)}" data-kind="handoff">${esc(state.text)}</span>`
+      : ''
+    return `<div class="card ho${state?.old ? ' unconfirmed' : ''}">
     <div class="to">For ${esc(h.to || 'someone else')}</div>
     <div class="t">${md(h.subject || '')}${age}</div>
     ${h.why ? `<div class="d">${md(h.why)}</div>` : ''}
@@ -875,6 +909,44 @@ function renderClocks(r){
     </li>`).join('')}</ul>`) : ''
 }
 
+// Ages tick from `since` alone, every poll, independent of whether anything
+// else on the board changed — because "nothing else changed" is exactly the
+// case this exists for: an idle board where an agent quietly stopped and no
+// one is writing. `stableKey` deliberately skips a full render() when the
+// JSON is byte-identical poll to poll (it exists so the server's own clock
+// fields do not cause a pointless repaint — that protection stays, and this
+// does not touch it). But an age chip lives inside a card render() built,
+// so on an unchanging board it was going stale in the one silent way this
+// entire mechanism exists to prevent: measured directly, not assumed — 10
+// real seconds and three 3000ms poll cycles produced zero renders and a
+// chip frozen at "logged 6 min ago" until an unrelated field changed on
+// disk. This patches the chip's text and the card's stale styling in
+// place, exactly like renderClocks patches the freshness stamp above:
+// nothing is torn down, so scroll position, open/closed sections and any
+// in-progress typing survive untouched — the cost this function must not
+// have, which a render()-on-a-timer would.
+function tickAges(r){
+  document.querySelectorAll('.agechip[data-since]').forEach(chip => {
+    const state = ageChipState(chip.dataset.kind, chip.dataset.since)
+    if(!state) return
+    chip.textContent = state.text
+    chip.classList.toggle('stale', state.old)
+    chip.closest('.card')?.classList.toggle('unconfirmed', state.old)
+  })
+  // The section heading is its own claim ("Running now"), not just a label
+  // over the cards — 0.4.0's own point was that a confident header over
+  // hedged cards is still a confident page. Recomputed from the real data
+  // via the same inFlightLabel() render() itself uses, not re-derived from
+  // the chips just patched above, so the two can never disagree.
+  const sec = document.getElementById('sec-inflight')
+  if(sec){
+    const text = inFlightLabel(r.inFlight)
+    const label = sec.querySelector('.sec-label')
+    if(label) label.textContent = text
+    sec.dataset.sec = text   // keeps the fold-open persistence key matching what is actually shown
+  }
+}
+
 function render(r){
   document.getElementById('project').textContent = (r.project || 'project').toUpperCase()
   // The tab is how the owner tells two boards apart when both are open, so it
@@ -908,7 +980,7 @@ function render(r){
     // present-tense assertion the page has no way to check. Once entries go
     // unconfirmed the section stops asserting in its own title too — a
     // confident header above hedged cards is still a confident page.
-    fold(inFlightLabel(r.inFlight), cards(r.inFlight), n('inFlight')) +
+    fold(inFlightLabel(r.inFlight), cards(r.inFlight), n('inFlight'), { id: 'inflight' }) +
     fold('Held, unpushed', commits
       ? `<ul class="commits">${commits}</ul>` +
         (r.whyHeld ? `<div class="why">${md(r.whyHeld)}</div>` : '') : '', n('held')) +
@@ -1169,6 +1241,7 @@ async function poll(){
     const key = stableKey(txt)
     if(key !== last){ last = key; render(data) }
     renderClocks(data)   // ages tick every poll; the rest only when it changes
+    tickAges(data)        // same reason: an idle board is exactly when a card's own age must not freeze
     tick.textContent = res.ok ? 'live' : 'error'
     beacon.classList.toggle('off', !res.ok)
   } catch (e) {

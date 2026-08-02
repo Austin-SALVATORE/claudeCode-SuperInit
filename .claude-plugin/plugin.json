@@ -1,6 +1,6 @@
 {
   "name": "project-init",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Bootstrap a project's .claude/ team structure — lead, architect, dev, QA, a subagent bench, and a live status board — so a new repository starts with a working practice instead of acquiring one.",
   "author": {
     "name": "Austin Salvatore"
