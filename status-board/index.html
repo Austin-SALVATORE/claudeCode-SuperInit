@@ -167,6 +167,19 @@
   .card .agechip{margin-left:9px;font:11px/1 var(--mono);letter-spacing:.06em;
     color:var(--ink3);white-space:nowrap}
   .card .agechip.stale{color:var(--amber)}
+  /* Same `.agechip` element, reused outside a card — a pipeline's eyebrow
+     or a fold's summary, both `text-transform:uppercase`, which the plain
+     colored text above never had to contend with. Caught by loading the
+     page, not by reading this file: unstyled here, it inherited that
+     uppercase and sat flush against the label with only a flex gap
+     between them, reading as one run-on phrase — "...UNCONFIRMED
+     UNCHANGED FOR 5 H" — instead of two separate claims. A small bordered
+     pill, matching `.n`'s own treatment two rules below in the same
+     summary, reads as its own fact regardless of casing or spacing. */
+  .eyebrow .agechip, summary .agechip{text-transform:none;font:600 10px/1 var(--mono);
+    letter-spacing:.05em;color:var(--ink3);border:1px solid var(--line);
+    border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;margin-left:2px}
+  .eyebrow .agechip.stale, summary .agechip.stale{color:var(--amber);border-color:var(--amber)}
   .card.unconfirmed{border-color:var(--amber);border-style:dashed}
   /* A shot is evidence, not decoration: full width of its card, checkered so
      a transparent or white-on-white capture is still visibly an image, and
@@ -629,7 +642,10 @@ const md = s => {
   return bolded.replace(new RegExp(NUL + '(\\d+)' + NUL, 'g'), (_, i) => `<code>${spans[+i]}</code>`)
 }
 const has = a => Array.isArray(a) && a.length
-const block = (label, inner) => inner ? `<div class="block"><p class="eyebrow">${esc(label)}</p>${inner}</div>` : ''
+// `chip` is pre-built, already-safe HTML (see `sectionChip()`, below the age
+// helpers it depends on) — never raw label text, so it is appended after
+// `esc(label)` rather than folded into the escaped string.
+const block = (label, inner, chip = '') => inner ? `<div class="block"><p class="eyebrow">${esc(label)}${chip}</p>${inner}</div>` : ''
 
 // Centre sections fold once they get long, so a growing history never pushes
 // the live work off the screen. "Needs you" is never foldable — the one thing
@@ -642,9 +658,9 @@ const FOLD_OVER = 3
 // and renders exactly as before: the wrapper span only appears when there
 // is something outside a real render() that might need to reach in and
 // change this heading's words.
-function fold(label, inner, count, { never = false, openBelow = FOLD_OVER, id = null } = {}){
+function fold(label, inner, count, { never = false, openBelow = FOLD_OVER, id = null, chip = '' } = {}){
   if(!inner) return ''
-  if(never) return `<div class="block"><p class="eyebrow">${esc(label)}</p>${inner}</div>`
+  if(never) return `<div class="block"><p class="eyebrow">${esc(label)}${chip}</p>${inner}</div>`
   const key = 'board.open.' + label
   let stored = null
   try { stored = localStorage.getItem(key) } catch (e) {}
@@ -652,7 +668,7 @@ function fold(label, inner, count, { never = false, openBelow = FOLD_OVER, id = 
   const open = stored === null ? count <= openBelow : stored === '1'
   const labelHtml = id ? `<span class="sec-label">${esc(label)}</span>` : esc(label)
   return `<details class="sec"${open ? ' open' : ''} data-sec="${esc(label)}"${id ? ` id="sec-${esc(id)}"` : ''}>
-    <summary>${labelHtml}${count ? `<span class="n">${count}</span>` : ''}</summary>
+    <summary>${labelHtml}${chip}${count ? `<span class="n">${count}</span>` : ''}</summary>
     ${inner}</details>`
 }
 
@@ -729,6 +745,16 @@ const UNCONFIRMED_AFTER_MIN = 20
 // be carried, short enough to still catch one forgotten by evening.
 const HANDOFF_STALE_AFTER_MIN = 240
 
+// `pipeline`/`inFlight` are STATE, not accumulation — see `section_ages()`
+// in serve.py for the split this threshold assumes. An accumulating
+// section (`findings`, `answered`) being old is fine, expected, the normal
+// case. A state section being unchanged for a long time is the specific
+// defect this exists to catch, so — same reasoning as HANDOFF's "half a
+// working day", not UNCONFIRMED_AFTER_MIN's fast loop: a pipeline step can
+// legitimately take hours, and flagging that as stale would train the
+// reader to ignore the chip before it ever caught a real one.
+const SECTION_STALE_AFTER_MIN = 240
+
 // One source of truth for an age chip's text and staleness, used both when
 // building the initial HTML (cards/handoffs) and when a chip already on the
 // page is patched in place with the time that has passed since (tickAges,
@@ -748,6 +774,10 @@ const HANDOFF_STALE_AFTER_MIN = 240
 const AGE_KINDS = {
   inflight: { thresholdMin: UNCONFIRMED_AFTER_MIN, freshPrefix: 'started ', stalePrefix: 'unconfirmed for ' },
   handoff:  { thresholdMin: HANDOFF_STALE_AFTER_MIN, freshPrefix: 'logged ', stalePrefix: 'waiting ' },
+  // "updated"/"unchanged for": a section is a claim about current state,
+  // not an event that happened at a point in time, so neither of the
+  // other two kinds' vocabulary fit without borrowing one word from each.
+  section:  { thresholdMin: SECTION_STALE_AFTER_MIN, freshPrefix: 'updated ', stalePrefix: 'unchanged for ' },
 }
 function ageChipState(kind, since){
   const m = minsSince(since)
@@ -756,6 +786,20 @@ function ageChipState(kind, since){
   const old = m > thresholdMin
   const text = old ? `${stalePrefix}${duration(m)}` : `${freshPrefix}${ago(m)}`
   return { old, text }
+}
+
+// A section's own age chip — same `.agechip` element and the same
+// `tickAges()` loop already re-dates every inFlight/handoff chip on every
+// poll picks this up for free, because it matches on the class and
+// `data-since` attribute alone; no section-specific code was added there.
+// Returns '' when the server has no reading for this section yet (e.g. a
+// key outside `Board.STATE_SECTIONS`), not a chip claiming zero age.
+const sectionChip = (r, key) => {
+  const iso = r.freshness && r.freshness.sections && r.freshness.sections[key]
+  if(!iso) return ''
+  const state = ageChipState('section', iso)
+  if(!state) return ''
+  return ` <span class="agechip${state.old ? ' stale' : ''}" data-since="${esc(iso)}" data-kind="section">${esc(state.text)}</span>`
 }
 
 // A picture, when prose cannot carry the thing.
@@ -1189,7 +1233,8 @@ function render(r){
   document.getElementById('pipeblock').innerHTML = p ? block(p.title,
     `<ol class="spine">${p.steps.map(s => `<li class="rung ${esc(s.status)}">
         <span class="pip"></span><span class="nm">${md(s.name)}</span>
-        <span class="st">${esc(s.status)}</span></li>`).join('')}</ol>`) : ''
+        <span class="st">${esc(s.status)}</span></li>`).join('')}</ol>`,
+    sectionChip(r, 'pipeline')) : ''
 
   const commits = (r.held || []).map(c =>
     `<li><span class="sha">${esc(c.sha)}</span><span>${md(c.what)}</span></li>`).join('')
@@ -1207,7 +1252,7 @@ function render(r){
     // present-tense assertion the page has no way to check. Once entries go
     // unconfirmed the section stops asserting in its own title too — a
     // confident header above hedged cards is still a confident page.
-    fold(inFlightLabel(r.inFlight), cards(r.inFlight), n('inFlight'), { id: 'inflight' }) +
+    fold(inFlightLabel(r.inFlight), cards(r.inFlight), n('inFlight'), { id: 'inflight', chip: sectionChip(r, 'inFlight') }) +
     fold('Held, unpushed', commits
       ? `<ul class="commits">${commits}</ul>` +
         (r.whyHeld ? `<div class="why">${md(r.whyHeld)}</div>` : '') : '', n('held')) +

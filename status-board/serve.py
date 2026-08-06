@@ -34,6 +34,7 @@ to the working tree.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -248,6 +249,79 @@ class Board:
             else:
                 steps.append(step)
         return {**pipe, "steps": steps}
+
+    # ── section ages: when did a STATE section last actually change ───
+    #
+    # `writtenAt` answers "when was the file last saved" — it bumps on
+    # every write regardless of which part changed, so a `pipeline` that
+    # has been silently frozen for days behind an otherwise-fresh
+    # `written 2 min ago` stamp reads as current. That is not hypothetical:
+    # it is the failure this exists for (3 Aug 2026, a progress rail two
+    # milestones behind while findings kept landing; separately, 1 Aug
+    # 2026, `inFlight` said "building Phase 0" while `pipeline` still read
+    # `todo` — both hand-maintained, both individually plausible, and nine
+    # months from now a fresh set of eyes would have no way to tell the
+    # difference between "just written" and "frozen for a week" without
+    # this).
+    #
+    # Deliberately NOT a field the narrative's author writes. A hand-typed
+    # `pipelineUpdatedAt` would be exactly the second source of truth that
+    # already burned this project once — see `resolve_pipeline`'s own
+    # docstring, same lesson, one layer up: a claim that can be typed can
+    # be typed wrong, or left stale, with nothing to catch it. Derived
+    # instead as a content hash, compared against the previous poll, and
+    # persisted in a file this server owns exclusively — `narrative.json`'s
+    # author never reads or writes it, same posture as `answers.json`
+    # belonging to the page rather than to Claude.
+    #
+    # Scope, deliberately narrow: only `pipeline` and `inFlight` for now —
+    # the two sections actually caught going stale, and the two with an
+    # unambiguous reading of "unchanged is a defect" (both are the lead's
+    # own claim about current work, nothing else drives them). `decisions`
+    # shrinks when the OWNER answers a question, not when the lead edits —
+    # so "unchanged" there could mean "nobody has asked anything new",
+    # which is not obviously a defect the way a frozen pipeline is. Worth
+    # revisiting with its own reasoning, not folded in by default.
+    STATE_SECTIONS = ("pipeline", "inFlight")
+
+    def section_ages(self, narrative: dict) -> dict[str, str]:
+        """ISO timestamp each tracked section's content last differed from
+        the previous poll. A brand-new board (no prior record) reports
+        every section as changed just now, not as ancient — there is no
+        history before the first measurement, and treating silence as
+        staleness before anything has actually been observed would be a
+        false alarm on every board's first request.
+
+        Known, stated limitation rather than a silently-assumed one: this
+        cannot see staleness that predates its own deployment. A `pipeline`
+        that had already sat frozen for two days before this shipped reads
+        as freshly-changed on the first request after the upgrade, because
+        the only history available is what this method itself recorded.
+        """
+        path = self.dir / "section-ages.json"
+        try:
+            stored: dict = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, ValueError):
+            stored = {}
+        now = datetime.now(timezone.utc).astimezone().isoformat()
+        dirty = False
+        out = {}
+        for key in self.STATE_SECTIONS:
+            digest = hashlib.sha256(
+                json.dumps(narrative.get(key), sort_keys=True, ensure_ascii=False).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            prev = stored.get(key)
+            if not prev or prev.get("hash") != digest:
+                stored[key] = {"hash": digest, "changedAt": now}
+                dirty = True
+            out[key] = stored[key]["changedAt"]
+        if dirty:
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(stored, indent=2))
+            tmp.replace(path)  # atomic, same reasoning as save_backlog/record_answer
+        return out
 
     # ── answers: recorded by the page, not by Claude ──────────────────
     def load_answers(self) -> dict:
@@ -555,6 +629,7 @@ class Board:
                     "checksAgeMin": age_minutes(checks.get("at")),
                     "dirtyFiles": dirty,
                     "commitsSinceNarrative": stale,
+                    "sections": self.section_ages(narrative),
                 },
             }
         )

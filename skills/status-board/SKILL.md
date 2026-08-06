@@ -245,6 +245,19 @@ never caught it, because a narrative written two minutes ago is wrong the
 instant a teammate commits. If you see that note, rewrite before replying
 — it is the page telling you it is describing a repository that has moved.
 
+**`pipeline` and `inFlight` each carry their own age now, separate from
+`writtenAt`.** The whole-file stamp answers "when was this saved" — it
+resets on every write regardless of which part changed, so a `pipeline`
+frozen for days behind an otherwise-fresh `written 2 min ago` read as
+current (3 Aug 2026: a progress rail two milestones behind, sitting under
+words rewritten minutes earlier). The per-section chip answers a different
+question — "when did *this* actually change" — derived server-side from a
+content hash compared across polls, never a field you type: a hand-typed
+`pipelineUpdatedAt` would be the same second-source-of-truth risk that
+already produced a wrong `pipeline: todo` beside a commit that had shipped
+it. Nothing to do here except know it exists — you cannot set it, and
+trying to would not do anything.
+
 Test counts are the exception: real measurements, too slow to run per
 request. Cache them under `checks` **with the timestamp of the run**, and
 the board shows how old they are.
@@ -498,6 +511,31 @@ When a decision is answered, move it from `decisions` to `answered`
 with `chose`, a `note` on what it means, and `when`. Do not just delete
 it — a question that silently vanishes reads as a question that was
 lost, and the owner cannot tell whether you registered the answer.
+
+**When the answer is a ruling to build or change something, the `note`
+also says where that work now lives** — a `queued` or `pipeline` row it
+maps to, or an explicit "no separate row" and why. This is a discipline
+rule carried in `note`, not a check the page runs for you, and that is a
+considered choice, not a gap: matching a `chose` answer to a `queued`/
+`inFlight`/`pipeline` row by text is a false-positive trap, not a fix —
+this project's own board has named one feature three different ways
+across three different rows in the same dataset ("the write path", "M6
+write path", "the comment button your friends actually press"), so an
+automatic match would either miss the real row or falsely clear the
+wrong one, and a false clear here would mask exactly the failure this
+exists to catch. A separate typed reference field fares no better — it
+is exactly the kind of hand-typed claim that can be forgotten or wrong,
+the same category the per-section ageing above exists to stop trusting.
+So: write it in prose, at the one moment it is cheapest — you already
+know the answer and are already touching the file.
+
+(3 Aug 2026: the owner ruled *yes, build the write path*. `answered`
+correctly recorded `chose` and a `note` on what the ruling meant.
+Neither field said where the resulting work could be found, and the
+next day there was nothing to find — the feature had been decomposed
+into five briefs, none named after it. The gap was never that the
+decision went unrecorded; it was that recording it never asked "and
+where does the answer to this live now?")
 
 **The `answered` entry is also your only record that you saw the tap.**
 Since answers arrive silently in `answers.json`, a decision still
