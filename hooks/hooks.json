@@ -22,6 +22,18 @@
         ],
         "description": "Instruct the agent to arm the answer watcher, so a tap arrives in seconds rather than on the owner's next message. Silent for projects with no board. A hook cannot call the Monitor tool, so this is a reliably-delivered instruction rather than a mechanism — weaker than board-answers.py by design, and the strongest option available for something that requires a tool call."
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/tree-lock-guard.py\""
+          }
+        ],
+        "description": "Deny a dispatch that would grant a second agent the working tree while another already holds it — \"one agent owns the working tree at a time\" was already written in team-roles.md and verification.md and was broken twice anyway, including once while the lead was actively quoting it. A rule that has been read and re-broken is proof the rule is the wrong instrument; this is the mechanism instead. Silent for a dispatch that is not tree-mutating (repo-inventory, architect, qa), for isolation: \"worktree\" dispatches, and for a role resuming itself. See status-board/tree_lock.py for the lock state both this hook and the board read."
+      }
     ]
   }
 }

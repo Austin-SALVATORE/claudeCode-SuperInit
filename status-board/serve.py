@@ -46,6 +46,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
+# Sibling module in this same directory, not a standalone script invoked
+# from elsewhere — unlike the hooks/ scripts, which duplicate this file's
+# helpers rather than import them because they run from a different
+# working directory. `serve.py`'s own directory is on `sys.path[0]`
+# automatically, so this import needs nothing extra.
+import tree_lock
+
 HERE = Path(__file__).resolve().parent
 PORT_BASE, PORT_SPAN = 8800, 120
 
@@ -575,6 +582,20 @@ class Board:
             else "none",
             "tree": tree,
         }
+        # Read-only here — this row exists so the owner can see who holds the
+        # tree without asking, the same argument as every other row in this
+        # dict. `hooks/tree-lock-guard.py` is the actual enforcement; this
+        # never writes the lock, only reports it. `"none"` (not "free")
+        # deliberately reuses tone()'s existing green-if-none rule on the
+        # client, rather than adding a client-side case for a second word
+        # that means the same thing.
+        lock = tree_lock.status(self.repo)
+        if lock.get("held"):
+            mins = lock.get("ageMin")
+            age = f"{mins:.0f}m" if isinstance(mins, (int, float)) else "?"
+            state["lock"] = f"{lock.get('holder', '?')} ({age})"
+        else:
+            state["lock"] = "none"
         for label in ("tests", "typecheck", "lint", "build"):
             if label in checks:
                 state[label] = checks[label]
