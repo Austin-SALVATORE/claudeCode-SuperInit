@@ -608,7 +608,14 @@ function initRails(){
   })
 }
 
-const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
+// Quotes are escaped too, not just tag characters: esc() output goes into
+// HTML *attributes* (data-q="...", data-a="..."), where a raw `"` in a
+// question or option label terminates the attribute early. Found live
+// (11 Aug 2026): a decision whose question contained a quoted phrase
+// recorded its answer under a truncated key — cut at the first inner
+// quote — which the answered-filter then couldn't match, so the card
+// never left "Needs you" on its own.
+const esc = s => String(s).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]))
 // Two rules, applied to text that is ALREADY escaped — every character this
 // function inserts into the DOM is either a literal tag we wrote ourselves
 // (`<code>`, `<strong>`) or a captured group of already-`esc()`-ed content.

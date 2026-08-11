@@ -37,6 +37,30 @@ description: Report to the owner on a live local web page instead of prose. Use 
      records immediately. It is a precise target that cannot plausibly
      be struck by accident, and it means agreement with an analysis
      printed on the same screen.
+
+   **The pill only exists if the card is authored with the exact field
+   names the page reads** — and wrong names fail silently, which is why
+   this paragraph exists. A `decisions[]` entry is:
+
+   ```json
+   { "q": "The question, one line",
+     "why": "Context paragraph (optional)",
+     "options": [
+       { "label": "First option", "why": "reason", "recommend": true },
+       { "label": "Second option", "why": "reason" } ] }
+   ```
+
+   The fields are `recommend` and `why` — **not** `recommended`, not
+   `reason`, not `context`. Misspell them and the card still renders,
+   but with no pill and no instant path: the owner meets a confirmation
+   modal on every tap and reports the board as broken. (11 Aug 2026: a
+   full day of cards was authored with `recommended`/`reason` after a
+   context compaction discarded the schema; nothing errored, every tap
+   double-confirmed.) One more authoring rule from the same incident:
+   the page escapes quotes in attributes now, but keep `q` and `label`
+   free of double-quote characters anyway on boards running an older
+     cached page — a `"` there truncated the recorded answer key and the
+     answered card never cleared on its own.
    - **Everything else confirms** — including the rest of that same
      recommended row. Its label, its reason text and its padding are a
      large target, and the exemption belongs to the pill, not to the
