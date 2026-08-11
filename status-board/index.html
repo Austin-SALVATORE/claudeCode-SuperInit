@@ -1030,7 +1030,7 @@ function choiceButtons(q, opts, project){
       <span class="optid${o.recommend ? ' rec' : ''}">${i + 1}</span>
       <span class="lab">${md(o.label)}</span>
       ${o.recommend
-        ? '<span class="pick" data-copied="Copied ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
+        ? '<span class="pick" data-copied="Recorded ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
         : '<span></span>'}
     </button>`
   }).join('')}<button class="opt other" data-rec="0" data-other="1"
@@ -1067,7 +1067,7 @@ function asks(list, project){
           data-rec="${o.recommend ? '1' : '0'}">
         <span class="lab">${md(o.label)}</span>
         ${o.recommend
-          ? '<span class="pick" data-copied="Copied ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
+          ? '<span class="pick" data-copied="Recorded ✓" title="Records immediately — the only click that skips confirmation">I&rsquo;d pick this</span>'
           : '<span></span>'}
         ${o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
       </button>`
@@ -1329,25 +1329,14 @@ function render(r){
         return
       }
 
-      const text = replyText(b.dataset.project, b.dataset.q, answer)
-      let ok = true
-      try { await navigator.clipboard.writeText(text) } catch (e) { ok = false }
-      if(!ok){
-        // Clipboard can be blocked. Select the text so it is still copyable
-        // by hand rather than claiming a copy that never happened.
-        const ta = document.createElement('textarea')
-        ta.value = text; ta.style.cssText = 'position:fixed;opacity:0'
-        document.body.appendChild(ta); ta.select()
-        try { ok = document.execCommand('copy') } catch (e) { ok = false }
-        ta.remove()
-      }
-      b.classList.add('copied')
-      toast(ok ? 'Copied with the question — just paste it' : 'Copy blocked — select the text by hand')
-      setTimeout(() => b.classList.remove('copied'), 1700)
-
-      // Record it server-side too, so the question leaves "Needs you" on the
-      // next poll whether or not I remember to move it. The copy is for me;
-      // this is so the board stops asking you something you have answered.
+      // Record FIRST — recording is the tap's whole job. The unconditional
+      // clipboard copy that used to live here predates the answer watcher:
+      // pasting into chat was once the only route an answer had to the
+      // agent, so every tap overwrote the owner's clipboard and toasted
+      // "Copied…", which read as the copy-question button misfiring
+      // (owner report, 11 Aug 2026). The watcher now delivers a recorded
+      // answer within seconds, so the copy is needed exactly when
+      // recording FAILS — and only then.
       //
       // A non-2xx response does NOT throw — fetch() only rejects on a
       // network failure, so a bare `try { await fetch(...) } catch {}`
@@ -1356,9 +1345,23 @@ function render(r){
       // own body-size cap rejected a real answer with a 400, and this code,
       // unchanged, proceeded as if it had succeeded — the question would
       // have kept reappearing as "Needs you" with no explanation. The
-      // clipboard copy above is not a substitute for this check; it is the
-      // fallback THIS failure needs, and it only works if the owner is told
-      // to use it.
+      // clipboard fallback below only works if the owner is told to use it.
+      const copyFallback = async () => {
+        const text = replyText(b.dataset.project, b.dataset.q, answer)
+        let ok = true
+        try { await navigator.clipboard.writeText(text) } catch (e) { ok = false }
+        if(!ok){
+          // Clipboard can be blocked. Select the text so it is still
+          // copyable by hand rather than claiming a copy that never
+          // happened.
+          const ta = document.createElement('textarea')
+          ta.value = text; ta.style.cssText = 'position:fixed;opacity:0'
+          document.body.appendChild(ta); ta.select()
+          try { ok = document.execCommand('copy') } catch (e) { ok = false }
+          ta.remove()
+        }
+        return ok
+      }
       try {
         const res = await fetch('answer', {
           method: 'POST',
@@ -1366,22 +1369,27 @@ function render(r){
           body: JSON.stringify({ q: b.dataset.q, answer }),
         })
         if (res.ok) {
+          b.classList.add('copied')
+          toast('Recorded — the agent picks it up in seconds')
+          setTimeout(() => b.classList.remove('copied'), 1700)
           last = ''
           setTimeout(poll, 1800)
         } else {
           // The server's own error strings (record_answer's ValueErrors) are
           // already full sentences ending in a period; the generic
           // `HTTP ${status}` fallback is not. Stripping any trailing period
-          // before adding our own avoids "...bytes.. Still on your
+          // before adding our own avoids "...bytes.. Copied to your
           // clipboard" — caught by actually reading the rendered toast, not
           // by inspecting the template.
           let reason = `HTTP ${res.status}`
           try { const j = await res.json(); if (j && j.error) reason = j.error } catch (e) {}
           reason = reason.replace(/\.+$/, '')
-          toast(`NOT recorded on the board — ${reason}. Still on your clipboard — paste it into chat so it is not lost.`, 'error')
+          const copied = await copyFallback()
+          toast(`NOT recorded on the board — ${reason}. ${copied ? 'Copied to your clipboard — paste it into chat so it is not lost.' : 'Copy also blocked — select the text by hand and paste it into chat.'}`, 'error')
         }
       } catch (e) {
-        toast('NOT recorded — could not reach the board server. Still on your clipboard — paste it into chat so it is not lost.', 'error')
+        const copied = await copyFallback()
+        toast(`NOT recorded — could not reach the board server. ${copied ? 'Copied to your clipboard — paste it into chat so it is not lost.' : 'Copy also blocked — select the text by hand and paste it into chat.'}`, 'error')
       }
     }
   })
