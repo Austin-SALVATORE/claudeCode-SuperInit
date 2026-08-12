@@ -1237,7 +1237,20 @@ function render(r){
     `<dt class="k">${esc(k)}</dt><dd class="v ${tone(v)}">${esc(String(v))}</dd>`).join('')
 
   const p = r.pipeline
+  // Contradiction detector, not an age detector: work is running (inFlight)
+  // while no pipeline rung says `running`. Age chips never catch this —
+  // a rail can be hours old and still *plausible*; what gives it away is
+  // that it disagrees with the section beside it. (12 Aug 2026: a new
+  // milestone started, inFlight was current, and the rail silently kept
+  // describing yesterday's shipped work. The owner noticed; the page did
+  // not — it now does.)
+  const inflightN = (r.inFlight || []).length
+  const railBlind = p && inflightN > 0 && !(p.steps || []).some(s => s.status === 'running')
+    ? `<div class="stale" style="margin:6px 0 2px">${inflightN} task${inflightN === 1 ? ' is' : 's are'} running,
+        but no step here is — this rail may describe an older milestone. Rewrite the pipeline.</div>`
+    : ''
   document.getElementById('pipeblock').innerHTML = p ? block(p.title,
+    railBlind +
     `<ol class="spine">${p.steps.map(s => `<li class="rung ${esc(s.status)}">
         <span class="pip"></span><span class="nm">${md(s.name)}</span>
         <span class="st">${esc(s.status)}</span></li>`).join('')}</ol>`,

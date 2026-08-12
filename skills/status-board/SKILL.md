@@ -262,6 +262,30 @@ commit. The board displayed the new SHA a few lines above a pipeline
 claiming nothing had started. The owner noticed; the page did not — it
 now does, see the drift note below.)
 
+**The single-edit rule has a milestone-sized variant, and it is the one
+that slips through.** Phase transitions *inside* a milestone update a
+rung you are already looking at. But when a **new stream of work
+starts** — a new milestone, a new plan, a pivot — the pipeline is not a
+rung to update, it is a section to **replace**, and nothing in the flow
+of starting the new work puts it in front of you: you write the
+headline, you fill `inFlight`, and the rail keeps narrating the
+*previous* milestone in perfect green. The tell is exact: **an
+`inFlight` entry naming work that no pipeline rung contains.** The rule:
+the same write that first puts a new work-stream into `inFlight` rewrites
+`pipeline` — new title, new steps — and parks the old milestone's
+held/queued remainder as explicit `held` rungs or `queued` items rather
+than leaving the dead rail in place.
+
+(12 Aug 2026: a nine-ruling migration ran all day — validators, an
+architect plan, a dev executing, `inFlight` current throughout — while
+the left rail still showed the previous day's shipped-and-held bundle.
+The owner asked "isn't the board missing what's running?" and was right.
+The page now proves this contradiction itself: when `inFlight` is
+non-empty and no pipeline step is `running`, the rail shows an amber
+"N tasks are running, but no step here is" note. As with every guard
+here, the note firing means *rewrite before replying* — it is not
+decoration.)
+
 **The board now proves this kind of staleness rather than trusting you.**
 When a commit lands after the last `writtenAt`, the stamp says how many
 commits arrived since these words and names the newest. Elapsed minutes
