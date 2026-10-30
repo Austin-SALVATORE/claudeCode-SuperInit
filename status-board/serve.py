@@ -55,6 +55,10 @@ import tree_lock
 
 HERE = Path(__file__).resolve().parent
 PORT_BASE, PORT_SPAN = 8800, 120
+# How much of a root transcript is read to learn whose it is. Session files
+# reach tens of megabytes; the `agentName` that identifies a pane teammate sits
+# within the first few hundred bytes, so one megabyte is a wide margin.
+TRANSCRIPT_HEAD = 1_000_000
 
 # Board state lives in the user's home, never beside this file. Installed as a
 # plugin, this directory is replaced wholesale on every update — boards written
@@ -441,9 +445,9 @@ class Board:
 
         Derived from agent transcript mtimes, not from anyone's self-report —
         an agent that acts touches its transcript, so this stays true even
-        when a teammate goes idle without telling anyone. Only metadata and
-        mtimes are read; the .jsonl bodies are never opened (they run to
-        megabytes).
+        when a teammate goes idle without telling anyone. Only metadata,
+        mtimes and the first megabyte of root transcripts are read; no .jsonl
+        body is ever opened whole (they run to tens of megabytes).
         """
         mangled = "-" + str(self.repo).strip("/").replace("/", "-")
         root = Path.home() / ".claude" / "projects" / mangled
@@ -484,20 +488,81 @@ class Board:
         # session entirely and would attribute someone else's activity to this
         # board. The team config names the lead session explicitly; fall back to
         # newest only when no team exists.
-        lead_file = None
+        teams = []
         for cfg in sorted((Path.home() / ".claude" / "teams").glob("*/config.json")):
             try:
                 team = json.loads(cfg.read_text())
             except (OSError, ValueError):
                 continue
-            if not any(
+            if any(
                 Path(m.get("cwd", "")) == self.repo for m in team.get("members", [])
             ):
+                teams.append(team)
+
+        # Pane teammates — dev, qa, architect in their own cmux panes — leave no
+        # meta.json, so the glob above sees only in-process spawns and the board
+        # showed a lead working alone while three teammates were mid-batch. A
+        # pane teammate is a member of the team config, and its transcript is
+        # an ordinary session file at the project root, indistinguishable from
+        # the lead's by name. What tells them apart is content: a teammate's
+        # transcript carries `"agentName":"<name>"` in its first lines (byte
+        # ~450 for dev, qa and architect, measured 21 Oct 2026); the lead's
+        # carries none. So each recent root transcript has its first megabyte
+        # read — only that, see TRANSCRIPT_HEAD — and is matched to a member by
+        # name. Newest transcript per name wins, as for subagents above.
+        panes = [
+            m
+            for team in teams
+            for m in team.get("members", [])
+            if m.get("agentType") != "team-lead"
+            and m.get("backendType") != "in-process"
+            and m.get("name")
+        ]
+        pane_names = {m["name"] for m in panes}
+        recent: dict[Path, tuple[float, frozenset[str]]] = {}
+        for t in root.glob("*.jsonl"):
+            if not t.is_file():
                 continue
+            age = (datetime.now().timestamp() - t.stat().st_mtime) / 60
+            if age > within_hours * 60:
+                continue
+            recent[t] = (age, self._head_names(t))
+        claimed: set[Path] = set()
+        for m in panes:
+            who = m["name"]
+            hits = [(age, t) for t, (age, names) in recent.items() if who in names]
+            if not hits:
+                continue
+            age, t = min(hits, key=lambda h: h[0])
+            claimed.add(t)
+            row = {
+                "who": who,
+                "kind": "teammate",
+                "model": (m.get("model") or "inherited").replace("claude-", ""),
+                "lastMin": round(age, 1),
+            }
+            if who not in newest or age < newest[who]["lastMin"]:
+                newest[who] = row
+
+        lead_file = None
+        for team in teams:
             candidate = root / f"{team.get('leadSessionId')}.jsonl"
             if candidate.exists():
                 lead_file = candidate
                 break
+        if lead_file is None:
+            # The configured lead session can be gone — a team config outlives
+            # the session that wrote it (21 Oct 2026: e41c6c61 named, no such
+            # transcript). "Newest root transcript" then stands in, but not one
+            # that is a teammate's: before pane teammates were recognised, the
+            # newest file here was routinely the dev's, and the board reported
+            # its activity as the lead's.
+            others = [
+                t
+                for t, (_, names) in recent.items()
+                if t not in claimed and not (names & pane_names)
+            ]
+            lead_file = max(others, key=lambda t: t.stat().st_mtime, default=None)
         if lead_file is None:
             files = [t for t in root.glob("*.jsonl") if t.is_file()]
             lead_file = max(files, key=lambda t: t.stat().st_mtime, default=None)
@@ -520,6 +585,35 @@ class Board:
                     newest.values(), key=lambda r: r["lastMin"]
                 )
         return sorted(newest.values(), key=lambda r: r["lastMin"])
+
+    # Keyed by path: (bytes the head covered, agentNames found in it). Once a
+    # file is past TRANSCRIPT_HEAD its head can no longer change, so that entry
+    # is final; a shorter file is re-read whenever it has grown.
+    _head_names_cache: dict[str, tuple[int, frozenset[str]]] = {}
+
+    def _head_names(self, path: Path) -> frozenset[str]:
+        """Which `"agentName"` values a root transcript declares in its head.
+
+        Reads at most TRANSCRIPT_HEAD bytes, for the same reason _lead_model
+        reads only a tail: this runs on every request against files that reach
+        tens of megabytes.
+        """
+        key = str(path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return frozenset()
+        hit = self._head_names_cache.get(key)
+        if hit is not None and (hit[0] >= TRANSCRIPT_HEAD or hit[0] == size):
+            return hit[1]
+        try:
+            with path.open("rb") as fh:
+                blob = fh.read(TRANSCRIPT_HEAD).decode("utf-8", "ignore")
+        except OSError:
+            return frozenset()
+        names = frozenset(re.findall(r'"agentName":"([^"]{1,64})"', blob))
+        self._head_names_cache[key] = (min(size, TRANSCRIPT_HEAD), names)
+        return names
 
     _lead_model_cache: dict[str, str] = {}
 
