@@ -21,6 +21,26 @@
           }
         ],
         "description": "Instruct the agent to arm the answer watcher, so a tap arrives in seconds rather than on the owner's next message. Silent for projects with no board. A hook cannot call the Monitor tool, so this is a reliably-delivered instruction rather than a mechanism — weaker than board-answers.py by design, and the strongest option available for something that requires a tool call."
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/offer-bootstrap.py\"",
+            "timeout": 10
+          }
+        ],
+        "description": "Offer the bootstrap in a folder with no team structure. A new session in a new folder never suggested /project-bootstrap, so the working practice this plugin exists to provide arrived only if the owner remembered to ask. A hook cannot run a skill, only instruct the agent, so like arm-watcher's this is an instruction — and it insists on the order: ask what the project is and who works on it, get a yes, only then scaffold. Silent when .claude/rules/team-roles.md exists at the cwd or its git top-level (a bare .claude/ proves nothing: Claude Code creates settings.local.json itself), in $HOME, / and ~/.claude, on resume/compact/fork, in an agent session, and when opted out (PROJECT_INIT_NO_OFFER=1, or an empty .claude/no-bootstrap-offer). Fails quiet: any error prints nothing and exits 0, so a bug costs the offer, not the session. A pane teammate is recognised by agent_type/agent_id, or by --agent-id/--parent-session-id on an ancestor process; neither has been seen in a live teammate yet, so one may still see the offer — noise, not damage."
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/revive-board.py\"",
+            "timeout": 15
+          }
+        ],
+        "description": "Restart a project's status board that is not running. A board's state survives a reboot but its server does not, and the owner found out by opening a dead URL. If the project has a board and nothing answers on its port (derived by serve.py itself — imported, not copied, so the two cannot disagree), this starts serve.py detached, logging to boards/<slug>/serve.log, and prints the URL. It does nothing if the board page already answers; if something else holds the port it starts nothing and says so in one line. Fails quiet but not blind: it always exits 0 and never waits more than a few seconds, and when it cannot bring the board up it prints one line pointing at the log. Limits: it restarts with serve.py's defaults (loopback only; the folder name as display name, since serve.py stores none), and it cannot tell another project's board on the same derived port from this one."
       }
     ],
     "PreToolUse": [

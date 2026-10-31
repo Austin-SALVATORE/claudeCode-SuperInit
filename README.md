@@ -28,6 +28,83 @@ Then, in any project:
 Running `/init` on a repository with no `.claude/` triggers the same
 thing.
 
+## At session start
+
+Two `SessionStart` hooks remove the manual setup a fresh session used to
+need. Each prints nothing when there is nothing to say and exits 0 on every
+path, so a bug in either costs you the old behaviour, never the session.
+
+### The bootstrap is offered
+
+A new session in a new folder never suggested `/project-bootstrap`, so the
+working practice this plugin exists to provide arrived only if you
+remembered to ask for it. `hooks/offer-bootstrap.py` now tells the agent,
+in a fresh session, to offer it — and to ask what the project is and who
+works on it *before* anything is written. A hook cannot run a skill, only
+instruct the agent, so what is guaranteed is the instruction and its
+order: no scaffolding without your yes.
+
+"No team structure" means no `.claude/rules/team-roles.md` at the working
+directory or at its git top-level. A bare `.claude/` is not enough: Claude
+Code creates `.claude/settings.local.json` by itself, so testing for the
+directory would count nearly every folder as done.
+
+The offer stays silent:
+
+- in `$HOME`, in `/`, and anywhere inside `~/.claude`;
+- unless the session is a fresh start or `/clear` — never on resume,
+  compact or fork, so it does not repeat;
+- in an agent session rather than yours (below);
+- when you have opted out.
+
+**Opting out.** Either of these:
+
+- `PROJECT_INIT_NO_OFFER=1` in the environment turns the offer off
+  everywhere. Put it in the `env` block of `~/.claude/settings.json` to
+  make it permanent.
+- An empty file `.claude/no-bootstrap-offer` turns it off for that folder
+  (checked at the working directory and at its git top-level). Commit it
+  or git-ignore it, as you prefer.
+
+**Teammates.** Subagents and in-process teammates never trigger
+`SessionStart`, so they never see the offer. A split-pane teammate is a
+separate Claude Code process and does. The hook recognises one from
+`agent_type` or `agent_id` in its payload, and from the `--agent-id` /
+`--parent-session-id` flags on an ancestor process: recorded launches of
+seven real pane teammates carry both, and the lead sessions inspected carry
+neither. Neither tell has been seen in a live teammate's `SessionStart` —
+the flags come from those recorded launches, `agent_type` from the
+documentation and from the `agent-setting` record that every teammate
+transcript examined opens with. If both are missing a teammate sees the
+offer: noise, not damage.
+
+### A dead board comes back
+
+A board's state lives in `~/.claude/status-board/boards/<slug>/` and
+survives a reboot. The server that serves it does not, and the first sign
+was a dead URL. `hooks/revive-board.py` checks at session start whether the
+project has a board (`boards/<slug>/narrative.json`) and whether anything
+answers on its port:
+
+- the board page answers: nothing happens;
+- nothing is listening: `serve.py` is started, detached, and one line
+  prints the URL;
+- something else is listening: nothing is started, and one line says the
+  port is taken.
+
+The slug and port are `serve.py`'s own. The hook imports `slug_for` and
+`port_for` rather than copying them, so the two cannot drift. The server
+runs in its own session with stdout and stderr in
+`boards/<slug>/serve.log`; if it cannot be brought up, the hook prints one
+line pointing at that log. Nothing waits more than a few seconds, and a lock
+file keeps two sessions that start together from launching two servers.
+
+What a revived board does not keep: `serve.py` stores no display name, so
+it comes back under the folder name; and it comes back on loopback only, so
+a board you had exposed with `--host` needs `--host` again. Nor can the
+hook tell a different project's board on the same derived port (there are
+120 ports) from this one; it leaves that alone.
+
 ## What the scaffold actually asserts
 
 The point is not the file tree — it is the separation:
@@ -89,6 +166,9 @@ overrides the location.
 The server is read-only against your repository and binds to
 `127.0.0.1` only. It exposes repo paths, branch names and commit
 subjects; do not bind it to anything else.
+
+If the server is down when a session starts — after a reboot, say — a hook
+starts it again; see [At session start](#at-session-start).
 
 Answers you tap reach the agent two ways, kept deliberately redundant
 because they fail differently. A `UserPromptSubmit` hook surfaces them
@@ -152,7 +232,7 @@ instrument, not effort* — broken by its author.
 
 ## Requirements
 
-Python 3 for the status board. The agent-team roles need
+Python 3 for the status board and the session-start hooks. The agent-team roles need
 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in `settings.json` **before
 a session starts** — setting it mid-session puts the variable in the
 environment but never builds the team infrastructure, so spawns quietly
