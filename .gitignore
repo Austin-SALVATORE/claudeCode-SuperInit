@@ -5,6 +5,9 @@
 status-board/boards/
 boards/
 
+# Local tool state, not part of the plugin.
+.omc/
+
 .DS_Store
 __pycache__/
 *.pyc

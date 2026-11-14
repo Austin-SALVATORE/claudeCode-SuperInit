@@ -43,6 +43,12 @@ Telling a teammate apart (looked into 31 Oct 2026, Claude Code 2.1.309-2.1.316):
   records, and both are exercised here only with synthetic input. If both are
   missing a teammate sees the offer: noise, not damage.
 
+An Orca worker is a third kind of agent session, and none of the above sees
+it (12 Nov 2026, Orca 1.4.257): it is a plain `claude` process with no agent
+flag and no agent_type, started in a checkout that is often a fresh worktree
+with no `.claude/` at all. It got the offer, ahead of the task it was
+dispatched for. `orca_session.py` recognises it from Orca's own record.
+
 Fails quiet. Any error, unreadable input or unexpected state prints nothing and
 exits 0 — the cost of a bug here is the status quo, no offer. A hook that
 blocks the session it is greeting is worse than the gap it fills.
@@ -145,7 +151,26 @@ def teammate_launched(limit: int = 8) -> bool:
 
 
 def agent_session(payload: dict) -> bool:
-    return any(payload.get(k) for k in AGENT_KEYS) or teammate_launched()
+    return (
+        any(payload.get(k) for k in AGENT_KEYS)
+        or teammate_launched()
+        or orca_worker(payload)
+    )
+
+
+def orca_worker(payload: dict) -> bool:
+    """True when this session is a worker that Orca dispatched (see
+    orca_session.py). Imported from beside this file; any failure means no."""
+    try:
+        sys.dont_write_bytecode = True  # never write into the plugin directory
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import orca_session
+
+        return orca_session.is_worker(payload)
+    except Exception:
+        return False
 
 
 def main() -> int:
