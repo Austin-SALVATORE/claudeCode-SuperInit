@@ -1,6 +1,6 @@
 ---
 name: status-board
-description: Report to the owner on a live local web page instead of prose. Use before EVERY substantive reply to the owner — status, findings, decisions, questions for them, anything they must carry elsewhere, or any reply containing a structured list. Works for any project, not one specific repo.
+description: Report to the owner on a live local web page instead of prose. Use before EVERY substantive reply to the owner — status, findings, decisions, questions for them, the state of the project's workstreams, anything they must carry elsewhere, or any reply containing a structured list. Works for any project, with or without Orca.
 ---
 
 # Status board
@@ -14,9 +14,10 @@ description: Report to the owner on a live local web page instead of prose. Use 
    bump `writtenAt`. Every time, not when it feels stale.
 3. **Read `answers.json` — do not wait to be told.** The page records
    every tap server-side the instant it happens, and **nothing notifies
-   you**. Tapping also copies the answer to the owner's clipboard, but
-   pasting it is an extra step they will not always take, and from your
-   side an answered question is indistinguishable from an ignored one.
+   you**. The page copies an answer to the owner's clipboard only when
+   recording it fails, so there is nothing for them to paste, and from
+   your side an answered question is indistinguishable from an ignored
+   one.
 
    ```bash
    cat ~/.claude/status-board/boards/<slug>/answers.json
@@ -33,10 +34,10 @@ description: Report to the owner on a live local web page instead of prose. Use 
    it, and do not ask again.** The page already applied the asymmetry
    before writing the file:
 
-   - Hitting the small **I'D PICK THIS pill** on the recommended option
-     records immediately. It is a precise target that cannot plausibly
-     be struck by accident, and it means agreement with an analysis
-     printed on the same screen.
+   - Hitting the small amber **I'd pick this** pill on the recommended
+     option records immediately. It is a precise target that cannot
+     plausibly be struck by accident, and it means agreement with an
+     analysis printed on the same screen.
 
    **The pill only exists if the card is authored with the exact field
    names the page reads** — and wrong names fail silently, which is why
@@ -72,6 +73,31 @@ description: Report to the owner on a live local web page instead of prose. Use 
    - Keyboard activation confirms, because the pill is not separately
      focusable — the safe direction, and worth knowing rather than
      mistaking for a bug.
+   - **A pill the page has just moved confirms too.** The pill is safe
+     to exempt only while it stays where the owner saw it. For about a
+     second after a repaint moved it, and for five seconds after a
+     repaint changed the answer under it, a hit on it asks like any
+     other target. The owner opening a question arms its pill at once,
+     unless opening it moved the list under the pointer (the question
+     above it closed): then it holds like any other move.
+   - **The page opens one question by itself, once, when it loads.**
+     After that only the owner opens one. If the open question leaves
+     `decisions`, its card closes and nothing opens in its place.
+
+   (13 Nov 2026, found in review before it shipped: the open card was
+   "whichever question is first now", recomputed on every render. A
+   narrative rewrite that put a new question first swapped the open
+   card, and the answer under its pill, with no act of the owner. The
+   guard had been stated as "only the open question can record" and
+   nobody had asked what decides which question is open.)
+
+   Two consequences for how you write. **Keep `q` stable while a
+   question is open:** a reworded `q` is a different question, the
+   owner's open card closes, and an answer already recorded under the
+   old wording no longer matches. **Do not move your recommendation on
+   an open question without saying so:** the page holds the pill for
+   five seconds, which is time to read a label, not to learn that you
+   changed your mind.
 
    **So re-asking is now the failure mode, not under-asking.** An earlier
    version of this rule told the agent to confirm a non-recommended
@@ -91,6 +117,10 @@ description: Report to the owner on a live local web page instead of prose. Use 
 4. **Is there no slot for what I am holding?** → **Add the field.** A
    missing slot is a gap in the model, never a licence to fall back to
    prose.
+5. **Did a workstream move?** A status, where it stands, a next step.
+   → Rewrite `workstreams` in the same write that changes the project's
+   register. The list on the board is a copy of that register, and a copy
+   that lags reads as the truth. See "The two main functions".
 
 The reply that remains should be short, and should be the things prose
 is genuinely better at: what I judge, what I got wrong, what I could not
@@ -101,6 +131,40 @@ directly. So status goes on a page they can glance at, and the reply in
 chat stays short.
 
 **The board is the report. The chat message is the pointer to it.**
+
+## The two main functions
+
+The page is built around two lists, and the first screen is the
+headline, the staleness stamp and these two. (Owner's ruling, 12 Nov
+2026: "the focus on two main function, question for me (Needs you) and
+WorkStream list".) Everything else the board holds sits under them, in
+sections that start folded: running now, handoffs, held commits,
+findings, backlog, pipeline, the facts read from git.
+
+| | What it is | You write | The board adds |
+|---|---|---|---|
+| **Needs you** | The questions waiting for the owner. One is open at a time; the rest are a list to read down, each with your pick. | `decisions`, then `answered` | The count, the confirmation gate, the recorded answer |
+| **Workstreams** | Every high-level subject of the project on one row: name, status, next step. The rest of a row opens on demand. | `workstreams` | Counts by status, the filter, the workers on each row, the list's age |
+
+In a narrow pane (under 1100 px) the two are tabs, each with its count;
+from 1100 px they sit side by side. A board with no `workstreams` field
+has one function and no tab bar, exactly as before.
+
+What this changes for how you write:
+
+- **A closed question shows `q` and the label of your recommended
+  option, nothing else.** The owner reads down fourteen of those to
+  decide which to open. So `q` must say what is being decided, and the
+  recommended `label` must make sense without the `why` beside it.
+- **`why` is cut at three lines, with the rest one tap away** (eight
+  lines where the panel is 860 px wide or more: the reasoning then sits
+  beside the options). Put the
+  sentence that decides the matter first. A reason that only arrives in
+  the fourth line is a reason most answers will be given without.
+- **Only the open question can record an answer.** That is what makes a
+  tap safe when the list moves: nothing under the pointer records by
+  itself. It also means your recommendation is seen before any option
+  can be tapped.
 
 ## Start it
 
@@ -213,11 +277,44 @@ you follow it.
 | **Machine facts** — branch, upstream SHA, unpushed commits, working tree, who moved | The server, from `git` and transcript mtimes, on **every request** | No. Nothing remembers them. |
 | **Judgement** — headline, decisions, findings, what is running | You, in `narrative.json` | **Yes.** So the board prints its own age. |
 
-**Who moved includes you.** The lead's own row sits at the top, derived
-from its session transcript's mtime exactly like every teammate's. Read
-it against the `written N ago` stamp: *"team-lead just now · written 25
-min ago"* is the board telling you it is describing a world you have
-since moved past.
+**Who moved includes you.** The lead's own row sits at the top of "at
+work", under the headline. Read it against the `written N ago` stamp:
+*"coordinator moved just now"* beside *"written 25 min ago"* is the
+board telling you it is describing a world you have since moved past.
+
+Where that row comes from depends on how the project is run:
+
+- **Under Orca**, from Orca itself. The server runs five listings of
+  the `orca` CLI in the background (`orchestration run-list`,
+  `orchestration worker-list`, `terminal list`, `worktree ps`, and
+  `orchestration task-list` for the title of a Task no live agent
+  carries) and never a command that changes anything. The **coordinator** is the live
+  terminal that an Orca Run names as its coordinator and that sits in
+  this project's checkout. Each **worker** shows the role that opens
+  its Task title, the title, its state and when it last moved, which is
+  the time of the agent's last status event. A worker whose title
+  carries a workstream id (`architect | WS-03 | options for ADR-25`)
+  also appears on that workstream's row. Any other session in the
+  project shows under its own terminal title, as a `session`. A worker
+  is listed while its agent is there: working, waiting on a prompt only
+  a person can answer, idle, or `done` with its terminal still open.
+  Once Orca has released the terminal the worker is gone from the list;
+  what it produced belongs in the workstream's record, not on this line.
+- **Otherwise**, from the team config and transcript mtimes, as before.
+  That is also what the board falls back to when the `orca` CLI is
+  missing, not running, slow or failing; no request waits for it.
+
+**So title every Orca Task `role | workstream id | subject`.** The
+board reads the role and the id from the title and from nowhere else.
+A worker started with a bare sentence for a title shows as `worker`,
+linked to nothing.
+
+**The board does not guess the coordinator.** If no Run is coordinated
+from a terminal in this project, there is no coordinator row, and one
+line says why. The alternative, "the newest session in this folder is
+the lead", is the wrong attribution described just below, and under
+Orca it is wrong more often: a worker started in the same checkout
+writes its transcript into the same folder as the coordinator's.
 
 That row exists because every other staleness signal here measures
 somebody else — git commits, teammate activity, elapsed minutes — while
@@ -232,14 +329,23 @@ Two things it must get right, both learned by getting them wrong:
   `leadSessionId`. A project directory holds one transcript per session,
   so "newest `.jsonl` here" can be a different session entirely and will
   cheerfully attribute someone else's activity to this board.
+- **A team config with one member names nobody.** With agent teams
+  switched on, every Claude Code session writes a config of its own,
+  `session-<id>`, whose only member is itself as `team-lead`. An Orca
+  worker writes one too. Taking the first such config that had a
+  transcript showed a worker's activity as the lead's (12 Nov 2026: the
+  `designer` worker's `session-030cd4b9` sorted ahead of the
+  coordinator's `session-70e0375d`, on the live board). Only a config
+  with a teammate in it is believed; a session whose first prompt is an
+  Orca dispatch is never the lead.
 - **A lead transcript records the `model` of every spawn it makes.** A
   bare `"sonnet"` from dispatching the dev sits in the same file as the
   lead's own model, so accept only `claude-*` values — otherwise the
   board reports the lead as running whatever it last dispatched, which
   looks entirely plausible and is wrong.
 
-Never type a SHA, a commit subject, a dirty-file count, or a teammate's
-model into `narrative.json`. Those are derived. Typing them creates a
+Never type a SHA, a commit subject, a dirty-file count, a teammate's
+model, or an Orca worker's state into `narrative.json`. Those are derived. Typing them creates a
 second source of truth that will disagree with git, and the board's whole
 value is that it does not do that.
 
@@ -268,7 +374,7 @@ rung you are already looking at. But when a **new stream of work
 starts** — a new milestone, a new plan, a pivot — the pipeline is not a
 rung to update, it is a section to **replace**, and nothing in the flow
 of starting the new work puts it in front of you: you write the
-headline, you fill `inFlight`, and the rail keeps narrating the
+headline, you fill `inFlight`, and the pipeline keeps narrating the
 *previous* milestone in perfect green. The tell is exact: **an
 `inFlight` entry naming work that no pipeline rung contains.** The rule:
 the same write that first puts a new work-stream into `inFlight` rewrites
@@ -278,10 +384,10 @@ than leaving the dead rail in place.
 
 (12 Aug 2026: a nine-ruling migration ran all day — validators, an
 architect plan, a dev executing, `inFlight` current throughout — while
-the left rail still showed the previous day's shipped-and-held bundle.
+the pipeline still showed the previous day's shipped-and-held bundle.
 The owner asked "isn't the board missing what's running?" and was right.
 The page now proves this contradiction itself: when `inFlight` is
-non-empty and no pipeline step is `running`, the rail shows an amber
+non-empty and no pipeline step is `running`, the pipeline section shows an amber
 "N tasks are running, but no step here is" note. As with every guard
 here, the note firing means *rewrite before replying* — it is not
 decoration.)
@@ -304,7 +410,9 @@ content hash compared across polls, never a field you type: a hand-typed
 `pipelineUpdatedAt` would be the same second-source-of-truth risk that
 already produced a wrong `pipeline: todo` beside a commit that had shipped
 it. Nothing to do here except know it exists — you cannot set it, and
-trying to would not do anything.
+trying to would not do anything. `workstreams` is dated the same way
+("list updated 26 min ago"), without the amber: a register can sit
+unchanged for days and be right.
 
 Test counts are the exception: real measurements, too slow to run per
 request. Cache them under `checks` **with the timestamp of the run**, and
@@ -451,6 +559,14 @@ The machine half needs nothing. The judgement half is on you:
   the only present-tense claim that was neither, which is why it was the
   one that silently lied.
 
+**Under Orca, `inFlight` says what the work is; Orca says who is doing
+it.** The worker's name, state and last move are on the page already,
+read from Orca, and they stay true when you are silent. Do not repeat
+them in `inFlight`, where they would be typed claims again. What Orca
+does not know is what the task means to the owner: that sentence is
+still yours, it still needs `since`, and it still leaves `inFlight` in
+the same action that receives the worker's report.
+
 The page re-fetches every 3s and again the moment the tab regains focus,
 so a teammate's commit or a rewritten narrative appears on its own.
 
@@ -480,21 +596,93 @@ so a teammate's commit or a rewritten narrative appears on its own.
                  "since": "2026-07-31T20:58:00+02:00" }],   // ages live
   "findings": [{ "sev": "high", "title": "…", "detail": "…" }],  // high|med|low
   "queued":   [{ "what": "…", "note": "…" }],
-  "open":     [{ "what": "…", "who": "unassigned" }]
+  "open":     [{ "what": "…", "who": "unassigned" }],
+  "workstreams": { … }                         // see the next section
 }
 ```
 
+### `workstreams` — the project's subjects, one row each
+
+```jsonc
+"workstreams": {
+  "title": "Workstream Register",              // optional; "Workstreams" if absent
+  "source": "docs/workstreams/README.md",      // optional; the file this list is copied from
+  "note": "One task is out: T-001 in WS-00.",  // optional; one line above the list
+  "groups": [{
+    "name": "A. Running the project",          // optional
+    "note": "Why these belong together.",      // optional; folded to two lines
+    "items": [{
+      "id": "WS-00",                           // what a Task title must carry to be linked
+      "name": "Operating model with Orca",     // visible without a click
+      "status": "Active",                      // visible without a click: the word, as you write it
+      "next": "The worker's report.",          // visible without a click
+      "goal": "What done looks like.",         // on demand, like everything below
+      "stands": "Where it stands today.",
+      "forecast": "English page by Fri 13 Nov (ours).",
+      "record": "`WS-00-operating-model.md`",
+      "details": [{ "label": "What the owner has set", "text": "…" }]   // optional extra lines
+    }]
+  }]
+}
+```
+
+The field names are these and only these. **A name the page does not
+read is printed back on the page** ("This list carries fields the page
+does not read: `nextStep`"), because the other outcome is the
+`recommended` / `reason` incident again: a row that renders, with a hole
+where the next step should be, and nothing saying why. The same goes for
+a field of the wrong kind: every field is text, and a list or an object
+where text belongs is named (`goal (not text)`) instead of dropped. Rows
+with neither an `id` nor a `name`, and groups that are not an object with
+an `items` list, are counted on the page. `details` is the
+slot for a column your register has that the list above does not, so a
+missing slot never sends that column back into prose.
+
+**Write it whenever the register changes, in the same action.** Every
+event that moves a workstream is two writes, the project's register and
+this field, and never one without the other. It is the single-edit rule
+again, one level up: the register is the record, this list is its copy
+on the page, and the owner reads the copy.
+
+**Status is a word, and you choose it.** The page prints the word you
+wrote and counts rows by it. These also get a shape and a colour, so the
+list can be read down its edge: `Active`, `Waiting on …` (`Waiting on
+PL`, `Waiting on you`), `Ready`, `Blocked`, `Not started`, `Parked`,
+`Done`. Any other word still renders, in a plain tag, and gets its own
+count and filter. Use the project's own status words and keep them few:
+six statuses filter well, sixteen do not.
+
+**Do not type who is working on a workstream.** The page puts each Orca
+worker on the row whose `id` is in its Task title. An `Active` row with
+no worker says so when opened ("No Orca worker carries WS-00 in its task
+title"), and a worker on a row that is not `Active` shows there too.
+Both are the page telling you the register and the work disagree.
+
+**Do not type when the list was updated.** There is no `updatedAt`. The
+page dates the list from the moment its content last changed, and when
+`source` names a file in the repo it compares that file with the board:
+"`docs/workstreams/README.md` changed 12 min after this board was last
+written". If you see that note, the register moved and the board did
+not. Rewrite before replying.
+
+**A workstream is not a pipeline step.** `pipeline` is a sequence inside
+one piece of work, with `shipped` / `held` / `running` / `todo`. The
+workstreams are the standing list of subjects, most of them not a
+sequence at all. Before this field existed, a register was written into
+`pipeline` because there was no other slot; it does not belong there.
+
 **`queued` and `open` are the same rail wearing two names.** Both render
-together in the **Backlog** panel — the same right-hand list the owner adds
-to directly with the page's own "+ Add" — grouped by state (`needs-triage`,
-`needs-you`, `ready`, `unverified`, `unowned`), aged, and shown alongside
+together in the **Backlog** section — the same list the owner adds to
+directly with the page's own "Add an item" — grouped by state
+(`needs-triage`, `needs-you`, `ready`, `unverified`, `unowned`; any other
+state gets a group under its own name), aged, and shown alongside
 whatever the owner typed in. There is no separate "queued" section anywhere
 on the page; a `what`/`note` pair written to `queued` and a `what`/`who`
 pair written to `open` map onto the same fields (`who` wins over `note` if
 both are given) and land in the same list, defaulting to `unowned` if
 neither sets `state`. Use `queued` when routing a deliverable's deferred
 work per the rule above; use `open` when you already know who it is
-waiting on. Neither needs its own place to live — the Backlog panel is
+waiting on. Neither needs its own place to live — the Backlog section is
 already that place, and it existed before either field did.
 
 (3 Aug 2026: `queued` was documented here and rendered nowhere. Every entry
@@ -505,18 +693,40 @@ building `queued` a second list next to it: two sections meaning almost
 the same thing would have been the same defect in a new shape.)
 
 Backticks in any string render as inline code, and `**bold**` renders as
-emphasis — nothing else does. No italics, no links, no headings; anything
-outside these two gets read back as literal punctuation. A code span wins
+bold. One asterisk each side renders as emphasis when the pair hugs its
+words: a letter or a digit must touch each asterisk on the inside, so
+`*.py` typed outside backticks stays as typed. In a text of several
+lines that is only read (a question's `why`, a `detail`, a workstream's
+fields, a backlog note), a line that starts with `- ` renders
+as a list item and a line that starts with `1.` as a numbered item.
+A web address renders as a link in the longer texts (a `why`, a `detail`,
+notes, a workstream's opened fields, the line under the headline); in the
+headline, in any title, name or subject, in a question's row and in an
+option it stays text, because a link there would be a second target under
+the pointer. A line that starts with `• ` or with `1)` works like `- ` and
+`1.`. No headings, no tables, no fenced code blocks, and `[text](address)`
+shows as typed. A code span wins
 over bold when they overlap: `` `a ** glob **` `` keeps its asterisks
 literal, so a shell glob or a CSS value inside backticks is never quietly
 half-bolded.
 
-**`headline` is a display line, not a paragraph.** It sets at 27px across
-the full content column, so one clause of roughly 60 characters fills a
-line or two and reads as a headline. Three sentences do not become a
-summary there — they become a wall of text at display size, and the owner
+**`headline` is a display line, not a paragraph.** It sets large, so one
+clause of roughly 60 characters fills a line or two and reads as a
+headline. Three sentences do not become a summary there, and the owner
 has to read all of it to find the one fact that changed. Put the fact in
 the headline and the reasoning in `findings`, where there is room.
+
+The page now guards this itself: past 110 characters it sets the first
+sentence as the headline, on two lines at most (three in a narrow pane),
+and shows one line of the rest as ordinary text, with
+the remainder one tap away. That is a net, not a licence. Whatever is
+folded is something the owner did not see at a glance. (12 Nov 2026: the
+live headline ran to 563 characters, five sentences, at display size.)
+
+The same net is under the other long texts: a card's `detail` shows five
+lines, a backlog note two and `workstreams.note` two, each with the rest
+one tap away, and a section's title shows two lines until its section is
+opened.
 
 (1 Aug 2026: the owner reported the title "squeezed together" with space
 to its right. Three causes, and fixing only one would have left it
@@ -538,8 +748,10 @@ needs confirming before you act, so **omitting one costs the owner a
 round trip.** Withholding a recommendation you actually hold is the
 expensive kind of politeness.
 
-Tapping an option copies **the project name, the question and the chosen
-answer** to the clipboard as two lines:
+An answer always travels with its question. The watcher and the hook
+hand you the two together, and if recording ever fails the page copies
+**the project name, the question and the chosen answer** to the owner's
+clipboard as two lines, so the answer is not lost:
 
 ```
 [acme-api board] Re: Confirm the retention window before I write the migration
@@ -559,6 +771,10 @@ When a decision is answered, move it from `decisions` to `answered`
 with `chose`, a `note` on what it means, and `when`. Do not just delete
 it — a question that silently vanishes reads as a question that was
 lost, and the owner cannot tell whether you registered the answer.
+`answered` shows as one line under the open questions, "Answered 77",
+which opens to the latest eight and then to all of them: within reach,
+out of the way. Write `when` as a full ISO timestamp: the page sorts by
+it, newest first, and "the latest eight" is only true if it can.
 
 **When the answer is a ruling to build or change something, the `note`
 also says where that work now lives** — a `queued` or `pipeline` row it
@@ -661,6 +877,7 @@ project tag and no arrows** — it is going to a human who has never seen
 this board, not back into a CLI. That is the opposite of the decision
 copy, which is deliberately machine-tagged because it comes back to you.
 Numbering is real here: the owner and the recipient will say "point 2".
+The page numbers the points itself, and drops a typed number that equals the one it prints.
 
 **Stamp a handoff with `since` when you log it, and resolve it when the
 owner tells you it is done** — the same two-part fix `inFlight` already
@@ -713,10 +930,37 @@ it.
   and a green `checks` block you did not personally reproduce is exactly
   the silent-wrong-all-clear the project's verification rules exist to
   prevent.
-- **Read-only against the repo and against team infrastructure.** The
-  server runs `git` in reporting modes only. Task lists and mailboxes
+- **Read-only against the repo, against team infrastructure and against
+  Orca.** The server runs `git` in reporting modes only, and of the
+  `orca` CLI only listings, with the caller's identity removed so it
+  reads no mailbox and is bound to no Run. Task lists and mailboxes
   under `~/.claude/tasks/` and `~/.claude/teams/` are maintained by Claude
-  Code — never hand-edit them.
+  Code — never hand-edit them. `STATUS_BOARD_ORCA=0` in the server's
+  environment switches the Orca reading off.
+- **An answer is recorded only from the board's own page.** A tap is a
+  ruling you act on, so the server refuses a write that is not sent as
+  JSON, that a browser says comes from another site, whose `Origin` is
+  not the board's own, or that reaches this machine under a name that is
+  not its own. Before 13 Nov 2026 any page open in the same browser could
+  post an answer to the board's port, and the hook and the watcher would
+  have handed it to you as the owner's ruling. A plain client such as
+  `curl` still works when it sends `Content-Type: application/json`.
+- **The board is read only under this machine's own names:**
+  `127.0.0.1`, `localhost` and `::1`. A request from this machine under
+  any other name gets a 403 for the page, for `report.json` and for the
+  shots alike, because that is what a web page looks like when it points
+  a name of its own at this machine to read the board through the
+  owner's browser. If the owner reads the board under another name (an
+  entry in `/etc/hosts`, a tunnel, a reverse proxy), list it:
+  `STATUS_BOARD_HOSTS=board.test,other.name` in the server's
+  environment, read once when the server starts. Put it in the `env`
+  block of `~/.claude/settings.json`, so a board that a hook starts
+  again has it too. Use `http://127.0.0.1:<port>` in anything you run
+  yourself, `curl` included.
+- **A shot is a picture, never a page.** Every file under `shots/` is
+  served sandboxed, so an SVG opened in its own tab runs no script and
+  can neither read the board nor record an answer. Do not rely on that
+  to vet an image: copy only pictures you made or trust into `shots/`.
 - **Bound to 127.0.0.1 by default, and that is the right default.** It
   exposes repo paths, branch names, commit subjects and every decision on
   the board — which on a personal project can mean genuinely private

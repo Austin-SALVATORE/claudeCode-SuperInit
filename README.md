@@ -8,9 +8,10 @@ Two skills:
 - **`project-bootstrap`** — scaffolds `.claude/`: role definitions for a
   team lead, architect, dev and QA; a subagent bench; verification and
   release rules; and handoff skills.
-- **`status-board`** — a local web page per project that reports status,
-  decisions and findings, so structured work stops being buried in chat
-  scrollback.
+- **`status-board`** — a local web page per project, built around two
+  lists: the questions that need you, and the project's workstreams.
+  Status, findings and everything else sit under them, so structured work
+  stops being buried in chat scrollback.
 
 ## Install
 
@@ -105,6 +106,32 @@ a board you had exposed with `--host` needs `--host` again. Nor can the
 hook tell a different project's board on the same derived port (there are
 120 ports) from this one; it leaves that alone.
 
+### Under Orca, a worker is not the owner's session
+
+Orca's coordinator starts workers with `orca orchestration worker-start`,
+and each worker is a Claude Code session of its own, so these hooks fire
+in it too. Three of them were written for your session and are silent in
+a worker's (`hooks/orca_session.py`):
+
+- the bootstrap offer, which arrived ahead of the task the worker was
+  dispatched for, in a worktree that is one task's checkout;
+- the instruction to arm the answer watcher: there is one watcher per
+  board, and a worker that armed it took it from the coordinator;
+- the answer hook, which printed your answers into the worker's context
+  and marked them surfaced, hiding them from the coordinator.
+
+Nothing in the environment tells a worker from a coordinator. The hooks
+recognise one from the dispatch that opens its first prompt, or from a
+dispatch that Orca lists as still live on its terminal, read with one
+listing command. A terminal that hosted a worker once does not count: a
+session you start there yourself is yours. Any doubt counts as "not a
+worker", and the hook does what it did before.
+
+`tree-lock-guard.py` is unchanged and does not see an Orca dispatch: it
+watches `Agent`, `Task` and `SendMessage`, and an Orca worker is started
+from a shell command. Under Orca the shared checkout is protected by
+giving a worker its own worktree, not by this lock.
+
 ## What the scaffold actually asserts
 
 The point is not the file tree — it is the separation:
@@ -167,8 +194,65 @@ The server is read-only against your repository and binds to
 `127.0.0.1` only. It exposes repo paths, branch names and commit
 subjects; do not bind it to anything else.
 
+It writes three small files of its own, and only when its own page asks:
+a write must be sent as JSON, from the board's own origin, to this
+machine under its own name. Any other page open in your browser is
+refused, so nothing but your tap can record an answer the agent will act
+on.
+
+It is read under this machine's own names only: `127.0.0.1`, `localhost`
+and `::1`. A request from this machine under any other name is refused
+with a 403, for the page, the report and the shots alike. That is what
+closes the other half of the same door: a web page that points a name of
+its own at your machine cannot read the board through your browser.
+
+If you read the board under another name yourself (an entry in
+`/etc/hosts`, a tunnel, a reverse proxy), list the names:
+
+```
+STATUS_BOARD_HOSTS=board.test,other.name
+```
+
+It is read once, when the server starts. Put it in the `env` block of
+`~/.claude/settings.json` so that a board started again by the session
+hook has it too. Nothing is added by default, not even your machine's
+own hostname: a foreign name is exactly what an attacker's request looks
+like, so the exception is yours to state.
+
+Screenshots under `shots/` are served as pictures and nothing more. An
+SVG is also a document, so every shot is sent sandboxed: opened in a tab
+of its own it runs no script and reaches nothing.
+
 If the server is down when a session starts — after a reboot, say — a hook
 starts it again; see [At session start](#at-session-start).
+
+### Two lists first
+
+The first screen is the headline, the stamp that dates it, and two
+lists. **Needs you** is the queue of questions: one open at a time, with
+its reasoning and options; the rest are a list to read down, each with
+the agent's pick. **Workstreams** is the project's register: every
+subject on one row with its status and next step, counts by status, a
+filter, and the rest of a row on demand. In a narrow pane the two are
+tabs; from 1100 px they sit side by side. A board whose narrative has no
+`workstreams` field shows the first list alone.
+
+### Who is working, read from Orca
+
+Run under Orca, the board reads the coordinator
+and its workers from Orca itself, with five listing commands of the
+`orca` CLI (`run-list`, `worker-list`, `terminal list`, `worktree ps`,
+`task-list`) and never one that changes anything. Each worker shows the
+role that opens its Task title, the title, its state and when it last
+moved, and appears on the workstream whose id its title carries. The
+listings run in the background, so a missing, slow or failing `orca`
+costs a request nothing: the board then derives the team from the team
+config and transcripts, as it does for a project outside Orca.
+`STATUS_BOARD_ORCA=0` switches the reading off.
+
+The coordinator is never guessed. It is the terminal an Orca Run names;
+if no Run names one in this project, the row is absent and the page says
+why.
 
 Answers you tap reach the agent two ways, kept deliberately redundant
 because they fail differently. A `UserPromptSubmit` hook surfaces them
