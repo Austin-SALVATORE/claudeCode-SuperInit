@@ -21,6 +21,11 @@ that makes keeping both worthwhile.
 Prints nothing when the project has no board, so a non-board project pays
 nothing. Exits 0 on every path: a reporting hook must never be able to block
 the session it reports on.
+
+Silent in a worker that Orca dispatched. The answers are the owner's rulings
+to the session that keeps the board, which under Orca is the coordinator.
+There is one watcher per board, so a worker that armed it would take it from
+the coordinator and carry it away when its task ends.
 """
 
 from __future__ import annotations
@@ -40,16 +45,36 @@ def slug_for(repo: Path) -> str:
     return repo.name.lower().replace(" ", "-")
 
 
+def orca_worker(payload: dict) -> bool:
+    """True when this session is a worker that Orca dispatched (see
+    orca_session.py). Imported from beside this file; any failure means no."""
+    try:
+        sys.dont_write_bytecode = True  # never write into the plugin directory
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import orca_session
+
+        return orca_session.is_worker(payload)
+    except Exception:
+        return False
+
+
 def main() -> int:
     cwd = Path.cwd()
+    payload: dict = {}
     try:
-        payload = json.load(sys.stdin)
-        if isinstance(payload, dict) and payload.get("cwd"):
-            cwd = Path(payload["cwd"])
+        loaded = json.load(sys.stdin)
+        if isinstance(loaded, dict):
+            payload = loaded
+            if payload.get("cwd"):
+                cwd = Path(payload["cwd"])
     except Exception:
         pass  # no stdin, or not JSON — cwd is a fine fallback
 
     if not (STATE / "boards" / slug_for(cwd) / "answers.json").is_file():
+        return 0
+    if orca_worker(payload):  # after the board test: only a board project pays for it
         return 0
 
     root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")

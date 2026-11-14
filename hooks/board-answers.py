@@ -14,6 +14,12 @@ board costs a few milliseconds and no tokens.
 Never fails the prompt: every path exits 0, and any unexpected error is
 swallowed. A broken reporting hook must not be able to block the session it
 reports on.
+
+Silent in a worker that Orca dispatched, and it leaves the seen-marker alone
+there. A worker started in the project's checkout gets each task as a prompt,
+so this hook fires in it; before this rule it printed the owner's answers to
+the worker, told it to act on them, and marked them surfaced, which silenced
+the same answers in the coordinator's session, the one they were for.
 """
 
 from __future__ import annotations
@@ -34,12 +40,30 @@ def slug_for(repo: Path) -> str:
     return repo.name.lower().replace(" ", "-")
 
 
+def orca_worker(payload: dict) -> bool:
+    """True when this session is a worker that Orca dispatched (see
+    orca_session.py). Imported from beside this file; any failure means no."""
+    try:
+        sys.dont_write_bytecode = True  # never write into the plugin directory
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import orca_session
+
+        return orca_session.is_worker(payload)
+    except Exception:
+        return False
+
+
 def main() -> int:
     cwd = Path.cwd()
+    payload: dict = {}
     try:
-        payload = json.load(sys.stdin)
-        if isinstance(payload, dict) and payload.get("cwd"):
-            cwd = Path(payload["cwd"])
+        loaded = json.load(sys.stdin)
+        if isinstance(loaded, dict):
+            payload = loaded
+            if payload.get("cwd"):
+                cwd = Path(payload["cwd"])
     except Exception:
         pass  # no stdin, or not JSON — cwd is a fine fallback
 
@@ -71,6 +95,10 @@ def main() -> int:
         if isinstance(a, dict) and seen.get(q) != a.get("at")
     ]
     if not fresh:
+        return 0
+    # Asked last, and only when there is something to say: the answer may cost
+    # a call to Orca, and a quiet board must stay free.
+    if orca_worker(payload):
         return 0
 
     fresh.sort(key=lambda qa: qa[1].get("at") or "")
