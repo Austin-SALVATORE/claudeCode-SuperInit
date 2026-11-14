@@ -40,11 +40,13 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import zlib
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 # Sibling module in this same directory, not a standalone script invoked
 # from elsewhere — unlike the hooks/ scripts, which duplicate this file's
@@ -53,12 +55,31 @@ from urllib.parse import unquote
 # automatically, so this import needs nothing extra.
 import tree_lock
 
+# Two more siblings, same reasoning. `orca_crew` reads who is working from
+# Orca when the project is run there; `workstreams` shapes the workstream
+# list. Importing either starts nothing: hooks/revive-board.py imports this
+# file only for `slug_for` and `port_for`.
+import orca_crew
+import workstreams
+
 HERE = Path(__file__).resolve().parent
 PORT_BASE, PORT_SPAN = 8800, 120
 # How much of a root transcript is read to learn whose it is. Session files
 # reach tens of megabytes; the `agentName` that identifies a pane teammate sits
 # within the first few hundred bytes, so one megabyte is a wide margin.
 TRANSCRIPT_HEAD = 1_000_000
+# What opens the first prompt of a worker that Orca dispatched. A session whose
+# transcript begins with it is a worker's, never the lead's (measured 12 Nov
+# 2026, Orca 1.4.257: byte 47,405 of a worker's transcript, in its first
+# `"type":"user"` record).
+# The project's worktrees are asked of git this often, not on every poll: the
+# page polls every 3 s per open tab and the list changes when a worker gets a
+# new worktree, which the next refresh after this many seconds picks up.
+PATHS_TTL_S = 30.0
+ORCA_WORKER_PROMPT = re.compile(
+    r"terminal handle is: term_[0-9a-f-]{8,}.{0,200}?Your task ID is: task_[0-9a-f]{6,}",
+    re.DOTALL,
+)
 
 # Board state lives in the user's home, never beside this file. Installed as a
 # plugin, this directory is replaced wholesale on every update — boards written
@@ -97,6 +118,21 @@ class Board:
         # it. Twice in one session an answered question stayed up and the
         # owner answered it again; discipline did not fix that, this does.
         self.answers = self.dir / "answers.json"
+        # Who is working, when the project is run under Orca. It reads in the
+        # background and is asked for its last snapshot, so a missing or slow
+        # `orca` never delays a request (see orca_crew.py).
+        self.orca = orca_crew.Probe()
+        # Requests are served in parallel (ThreadingHTTPServer), and every
+        # file the server writes is read, changed and written back. Without
+        # a lock two taps a few milliseconds apart (the Orca pane and a
+        # phone, say) both read the same answers.json and the second write
+        # drops the first answer; worse, both write the same `.tmp` file, and
+        # an interleaved write leaves answers.json unparseable, after which
+        # the next tap starts again from an empty file. One lock, held for
+        # the whole read-change-write, here and for the backlog and the
+        # section ages.
+        self._write_lock = threading.Lock()
+        self._paths: tuple[float, frozenset[str]] | None = None
         if not self.narrative.exists():
             self.narrative.write_text(
                 json.dumps(
@@ -170,27 +206,28 @@ class Board:
         title = str(payload.get("title", "")).strip()
         if not title:
             raise ValueError("An item needs a title.")
-        rows = self.load_backlog()
-        item = {
-            "id": f"you-{len(rows) + 1}-{int(datetime.now().timestamp())}",
-            "title": title[:300],
-            "kind": payload.get("kind") if payload.get("kind") in self.KINDS else "task",
-            "notes": str(payload.get("notes", "")).strip()[:2000],
-            "createdAt": datetime.now(timezone.utc).astimezone().isoformat(),
-            "state": "needs-triage",
-            "source": "you",
-        }
-        rows.append(item)
-        self.save_backlog(rows)
+        with self._write_lock:
+            rows = self.load_backlog()
+            item = {
+                "id": f"you-{len(rows) + 1}-{int(datetime.now().timestamp())}",
+                "title": title[:300],
+                "kind": payload.get("kind") if payload.get("kind") in self.KINDS else "task",
+                "notes": str(payload.get("notes", "")).strip()[:2000],
+                "createdAt": datetime.now(timezone.utc).astimezone().isoformat(),
+                "state": "needs-triage",
+                "source": "you",
+            }
+            self.save_backlog([*rows, item])
         return item
 
     def set_state(self, item_id: str, state: str) -> dict | None:
-        rows = self.load_backlog()
-        for row in rows:
-            if row.get("id") == item_id:
-                row["state"] = state
-                self.save_backlog(rows)
-                return row
+        with self._write_lock:
+            rows = self.load_backlog()
+            for index, row in enumerate(rows):
+                if row.get("id") == item_id:
+                    changed = {**row, "state": state}
+                    self.save_backlog([*rows[:index], changed, *rows[index + 1 :]])
+                    return changed
         return None
 
     def backlog_view(self, narrative: dict) -> list[dict]:
@@ -293,7 +330,14 @@ class Board:
     # so "unchanged" there could mean "nobody has asked anything new",
     # which is not obviously a defect the way a frozen pipeline is. Worth
     # revisiting with its own reasoning, not folded in by default.
-    STATE_SECTIONS = ("pipeline", "inFlight")
+    #
+    # `workstreams` joined on 12 Nov 2026 for a different reason: the list is
+    # a copy of the project's register, and the page dates it ("list updated
+    # 26 min ago") from this hash. Unlike the other two, an unchanged list is
+    # normal (a register can sit for days), so the page shows this age without
+    # the amber. What it can prove is drift from the register file itself:
+    # see workstreams.source_check.
+    STATE_SECTIONS = ("pipeline", "inFlight", "workstreams")
 
     def section_ages(self, narrative: dict) -> dict[str, str]:
         """ISO timestamp each tracked section's content last differed from
@@ -309,10 +353,16 @@ class Board:
         as freshly-changed on the first request after the upgrade, because
         the only history available is what this method itself recorded.
         """
+        with self._write_lock:
+            return self._section_ages(narrative)
+
+    def _section_ages(self, narrative: dict) -> dict[str, str]:
         path = self.dir / "section-ages.json"
         try:
             stored: dict = json.loads(path.read_text()) if path.exists() else {}
         except (OSError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
             stored = {}
         now = datetime.now(timezone.utc).astimezone().isoformat()
         dirty = False
@@ -324,7 +374,7 @@ class Board:
                 )
             ).hexdigest()
             prev = stored.get(key)
-            if not prev or prev.get("hash") != digest:
+            if not isinstance(prev, dict) or prev.get("hash") != digest:
                 stored[key] = {"hash": digest, "changedAt": now}
                 dirty = True
             out[key] = stored[key]["changedAt"]
@@ -392,10 +442,11 @@ class Board:
     MAX_BODY_BYTES = ANSWER_MAX_CHARS * 4 + QUESTION_MAX_CHARS * 4 + 4096
 
     def record_answer(self, question: str, answer: str) -> dict:
+        if question is None or answer is None:
+            raise ValueError("An answer needs both a question and a choice.")
         question, answer = str(question).strip(), str(answer).strip()
         if not question or not answer:
             raise ValueError("An answer needs both a question and a choice.")
-        rows = self.load_answers()
         truncated = len(answer) > self.ANSWER_MAX_CHARS
         entry = {
             "answer": answer[: self.ANSWER_MAX_CHARS],
@@ -405,28 +456,46 @@ class Board:
             entry["truncated"] = True
             entry["originalLength"] = len(answer)
             entry["truncatedAt"] = self.ANSWER_MAX_CHARS
-        rows[question[: self.QUESTION_MAX_CHARS]] = entry
-        tmp = self.answers.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
-        tmp.replace(self.answers)
+        # Read, change and write back as one step (see _write_lock): the
+        # file's format is unchanged, only two writers can no longer cross.
+        with self._write_lock:
+            rows = {**self.load_answers(), question[: self.QUESTION_MAX_CHARS]: entry}
+            tmp = self.answers.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
+            tmp.replace(self.answers)
         return entry
 
-    def split_decisions(self, narrative: dict) -> tuple[list, list]:
+    def split_decisions(self, narrative: dict) -> tuple[list, list, int]:
         """Anything the owner has answered leaves 'Needs you' immediately.
 
         The note distinguishes *they told me* from *I acted on it* — those are
         different states and collapsing them is what made the board lie.
         """
         recorded = self.load_answers()
-        pending, answered = [], []
-        for d in narrative.get("decisions", []):
-            hit = recorded.get(d.get("q", ""))
+        pending, answered, unreadable = [], [], 0
+        listed = narrative.get("decisions")
+        for raw in listed if isinstance(listed, list) else []:
+            # The question is the key an answer is recorded under, so it has
+            # to be text. A number is printed as text. An entry that is not
+            # an object, or has no question, cannot be answered: it is
+            # counted, and the page says how many it could not show.
+            q = raw.get("q") if isinstance(raw, dict) else None
+            if isinstance(q, (int, float)) and not isinstance(q, bool):
+                q = str(q)
+            if not isinstance(q, str) or not q.strip():
+                unreadable += 1
+                continue
+            d = raw if q is raw["q"] else {**raw, "q": q}
+            hit = recorded.get(d["q"])
             if hit:
                 entry = {
                     "q": d["q"],
                     "chose": hit["answer"],
                     "note": "Recorded from the board. Not yet folded into my report.",
                     "when": hit["at"][11:16],
+                    # The whole timestamp as well: the page orders answered
+                    # questions newest first, and "23:37" alone has no date.
+                    "at": hit["at"],
                 }
                 # Carried through, never dropped here: a truncated answer is
                 # still truncated on the board, not just in the file on disk.
@@ -437,17 +506,86 @@ class Board:
                 answered.append(entry)
             else:
                 pending.append(d)
-        return pending, answered + narrative.get("answered", [])
+        earlier = narrative.get("answered")
+        return pending, answered + (earlier if isinstance(earlier, list) else []), unreadable
+
+    # ── who is working: Orca's record when there is one ───────────────
+    def project_paths(self) -> frozenset[str]:
+        """The repo and its git worktrees: every folder that is this project.
+
+        An Orca worker often works in a worktree of the repo, not in the
+        checkout the board was started for. `git worktree list` is what makes
+        both the same project, measured rather than inferred from a folder
+        name.
+        """
+        cached = self._paths
+        if cached is not None and time.monotonic() - cached[0] < PATHS_TTL_S:
+            return cached[1]
+        paths = {os.path.realpath(self.repo)}
+        for line in self.git("worktree", "list", "--porcelain").splitlines():
+            if line.startswith("worktree "):
+                paths.add(os.path.realpath(line[len("worktree ") :].strip()))
+        found = frozenset(paths)
+        self._paths = (time.monotonic(), found)
+        return found
+
+    def crew(self, within_hours: float = 12.0) -> tuple[list[dict], dict]:
+        """Who is working, and what the page may say about where that came from.
+
+        Run under Orca, the rows are Orca's: the coordinator a Run names,
+        its workers, and any other session in the project. Otherwise they are
+        derived from transcripts as before (`_transcript_team`).
+
+        The one thing that changes for a project Orca knows: the lead is no
+        longer guessed. "Newest session in this folder" was the stand-in when
+        no team config named the lead; under Orca that folder also holds the
+        transcripts of workers started in the same checkout, so the guess
+        attributes a worker's activity to the lead. If no Run names a
+        coordinator here, the page shows none and says so.
+        """
+        paths = self.project_paths()
+        view = self.orca.view(paths)
+        known = view.snapshot is not None and orca_crew.knows_project(view.snapshot, paths)
+        # While Orca's first answer is on its way, nothing is guessed either:
+        # a guessed row that vanishes a second later is still a wrong row.
+        lead, explicit, others = self._transcript_team(
+            within_hours, guess_lead=not known and view.state != "checking"
+        )
+        if not known:
+            return ([lead] if lead else []) + others, {"state": view.state, "known": False}
+        rows = orca_crew.crew_rows(
+            view.snapshot, paths, os.path.realpath(self.repo), time.time(), within_hours
+        )
+        named = any(r["kind"] == "coordinator" for r in rows)
+        if lead and explicit and not named:
+            rows = [lead] + rows  # a team config still names its lead outright
+        meta = {
+            "state": "ok",
+            "known": True,
+            "ageSec": round(max(0.0, time.time() - view.snapshot.taken)),
+        }
+        if not named and not (lead and explicit):
+            meta["note"] = (
+                "No coordinator row: no Orca Run is coordinated from a terminal "
+                "in this project, so the board does not guess one."
+            )
+        return rows + others, meta
 
     # ── teammates, measured rather than reported ──────────────────────
-    def team(self, within_hours: float = 12.0) -> list[dict]:
-        """Who has been working, and when they last moved.
+    def _transcript_team(
+        self, within_hours: float, guess_lead: bool
+    ) -> tuple[dict | None, bool, list[dict]]:
+        """Who has been working, and when they last moved: (lead row, whether a
+        team config named it, everyone else).
 
         Derived from agent transcript mtimes, not from anyone's self-report —
         an agent that acts touches its transcript, so this stays true even
         when a teammate goes idle without telling anyone. Only metadata,
         mtimes and the first megabyte of root transcripts are read; no .jsonl
         body is ever opened whole (they run to tens of megabytes).
+
+        `guess_lead` is False for a project Orca knows (see `crew`): the lead
+        then comes from a team config or not at all.
         """
         mangled = "-" + str(self.repo).strip("/").replace("/", "-")
         root = Path.home() / ".claude" / "projects" / mangled
@@ -465,6 +603,7 @@ class Board:
                 continue
             who = meta.get("name") or meta.get("agentType") or "agent"
             row = {
+                "id": who,
                 "who": who,
                 "kind": "teammate"
                 if meta.get("taskKind") == "in_process_teammate"
@@ -519,23 +658,26 @@ class Board:
             and m.get("name")
         ]
         pane_names = {m["name"] for m in panes}
-        recent: dict[Path, tuple[float, frozenset[str]]] = {}
+        # Per recent root transcript: its age, the agent names its head
+        # declares, and whether it opens with an Orca worker's dispatch.
+        recent: dict[Path, tuple[float, frozenset[str], bool]] = {}
         for t in root.glob("*.jsonl"):
             if not t.is_file():
                 continue
             age = (datetime.now().timestamp() - t.stat().st_mtime) / 60
             if age > within_hours * 60:
                 continue
-            recent[t] = (age, self._head_names(t))
+            recent[t] = (age, *self._head_marks(t))
         claimed: set[Path] = set()
         for m in panes:
             who = m["name"]
-            hits = [(age, t) for t, (age, names) in recent.items() if who in names]
+            hits = [(age, t) for t, (age, names, _) in recent.items() if who in names]
             if not hits:
                 continue
             age, t = min(hits, key=lambda h: h[0])
             claimed.add(t)
             row = {
+                "id": who,
                 "who": who,
                 "kind": "teammate",
                 "model": (m.get("model") or "inherited").replace("claude-", ""),
@@ -544,29 +686,46 @@ class Board:
             if who not in newest or age < newest[who]["lastMin"]:
                 newest[who] = row
 
-        lead_file = None
+        # A team config names the lead only if it is a team. With agent teams
+        # switched on, every Claude Code session writes a config of its own,
+        # `session-<id>`, whose one member is itself as `team-lead`; an Orca
+        # worker started in this checkout writes one too. Taking the first of
+        # those that has a transcript made the board show a worker's activity
+        # as the lead's (12 Nov 2026: `session-030cd4b9`, the `designer`
+        # worker, sorted ahead of the coordinator's `session-70e0375d`). A
+        # one-member config says "this session leads itself", which every
+        # session can say; it decides nothing, so only a config with a
+        # teammate in it is believed.
+        lead_file, explicit = None, False
         for team in teams:
+            if not any(m.get("agentType") != "team-lead" for m in team.get("members", [])):
+                continue
             candidate = root / f"{team.get('leadSessionId')}.jsonl"
             if candidate.exists():
-                lead_file = candidate
+                lead_file, explicit = candidate, True
                 break
-        if lead_file is None:
+        if lead_file is None and guess_lead:
             # The configured lead session can be gone — a team config outlives
             # the session that wrote it (21 Oct 2026: e41c6c61 named, no such
             # transcript). "Newest root transcript" then stands in, but not one
             # that is a teammate's: before pane teammates were recognised, the
             # newest file here was routinely the dev's, and the board reported
-            # its activity as the lead's.
+            # its activity as the lead's. Nor one that is an Orca worker's,
+            # for the same reason: when the `orca` CLI cannot be asked, a
+            # worker started in this checkout must still not pass for the lead.
+            #
+            # There used to be a second stand-in after this one: the newest
+            # root transcript of any age and any owner. It could only do two
+            # things: pick a file too old to show (no row either way), or pick
+            # one this list had just excluded as a teammate's. It is gone.
             others = [
                 t
-                for t, (_, names) in recent.items()
-                if t not in claimed and not (names & pane_names)
+                for t, (_, names, worker) in recent.items()
+                if t not in claimed and not worker and not (names & pane_names)
             ]
             lead_file = max(others, key=lambda t: t.stat().st_mtime, default=None)
-        if lead_file is None:
-            files = [t for t in root.glob("*.jsonl") if t.is_file()]
-            lead_file = max(files, key=lambda t: t.stat().st_mtime, default=None)
 
+        rest = sorted(newest.values(), key=lambda r: r["lastMin"])
         if lead_file is not None:
             try:
                 age = (datetime.now().timestamp() - lead_file.stat().st_mtime) / 60
@@ -574,6 +733,7 @@ class Board:
                 age = None
             if age is not None and age <= within_hours * 60:
                 rows_lead = {
+                    "id": "team-lead",
                     "who": "team-lead",
                     "kind": "lead",
                     "model": (self._lead_model(lead_file) or "inherited").replace(
@@ -581,18 +741,19 @@ class Board:
                     ),
                     "lastMin": round(age, 1),
                 }
-                return [rows_lead] + sorted(
-                    newest.values(), key=lambda r: r["lastMin"]
-                )
-        return sorted(newest.values(), key=lambda r: r["lastMin"])
+                return rows_lead, explicit, rest
+        return None, False, rest
 
-    # Keyed by path: (bytes the head covered, agentNames found in it). Once a
-    # file is past TRANSCRIPT_HEAD its head can no longer change, so that entry
-    # is final; a shorter file is re-read whenever it has grown.
-    _head_names_cache: dict[str, tuple[int, frozenset[str]]] = {}
+    # Keyed by path: (bytes the head covered, agentNames found in it, whether
+    # it opens with an Orca dispatch). Once a file is past TRANSCRIPT_HEAD its
+    # head can no longer change, so that entry is final; a shorter file is
+    # re-read whenever it has grown.
+    _head_marks_cache: dict[str, tuple[int, frozenset[str], bool]] = {}
 
-    def _head_names(self, path: Path) -> frozenset[str]:
-        """Which `"agentName"` values a root transcript declares in its head.
+    def _head_marks(self, path: Path) -> tuple[frozenset[str], bool]:
+        """What a root transcript's head says about whose session it is: the
+        `"agentName"` values it declares (a pane teammate), and whether its
+        first prompt is an Orca dispatch (a worker).
 
         Reads at most TRANSCRIPT_HEAD bytes, for the same reason _lead_model
         reads only a tail: this runs on every request against files that reach
@@ -602,18 +763,19 @@ class Board:
         try:
             size = path.stat().st_size
         except OSError:
-            return frozenset()
-        hit = self._head_names_cache.get(key)
+            return frozenset(), False
+        hit = self._head_marks_cache.get(key)
         if hit is not None and (hit[0] >= TRANSCRIPT_HEAD or hit[0] == size):
-            return hit[1]
+            return hit[1], hit[2]
         try:
             with path.open("rb") as fh:
                 blob = fh.read(TRANSCRIPT_HEAD).decode("utf-8", "ignore")
         except OSError:
-            return frozenset()
+            return frozenset(), False
         names = frozenset(re.findall(r'"agentName":"([^"]{1,64})"', blob))
-        self._head_names_cache[key] = (min(size, TRANSCRIPT_HEAD), names)
-        return names
+        worker = _opens_with_dispatch(blob)
+        self._head_marks_cache[key] = (min(size, TRANSCRIPT_HEAD), names, worker)
+        return names, worker
 
     _lead_model_cache: dict[str, str] = {}
 
@@ -724,7 +886,19 @@ class Board:
             except ValueError:
                 stale = None
 
-        pending, answered = self.split_decisions(narrative)
+        pending, answered, unreadable = self.split_decisions(narrative)
+
+        # The workstream list is the agent's; who is on each workstream is
+        # not. A worker is linked to a workstream by the id in its Task title,
+        # read from Orca, so the list can never claim a worker that is not
+        # there, nor miss one that is.
+        crew, orca = self.crew()
+        streams = workstreams.normalise(narrative.get("workstreams"))
+        if streams is not None:
+            crew = workstreams.link(crew, workstreams.ids_of(streams))
+            drift = workstreams.source_check(self.repo, streams["source"], self.narrative)
+            if drift is not None:
+                streams = {**streams, "sourceCheck": drift}
 
         out = dict(narrative)
         out.pop("checks", None)
@@ -732,12 +906,15 @@ class Board:
             {
                 "project": self.name,
                 "decisions": pending,
+                "unreadableDecisions": unreadable,
                 "answered": answered,
                 "pipeline": self.resolve_pipeline(narrative, up),
                 "updatedAt": datetime.now(timezone.utc).astimezone().isoformat(),
                 "state": state,
                 "held": held,
-                "team": self.team(),
+                "team": crew,
+                "orca": orca,
+                "workstreams": streams,
                 "backlog": self.backlog_view(narrative),
                 "freshness": {
                     "narrativeAgeMin": age_minutes(narrative.get("writtenAt")),
@@ -770,7 +947,136 @@ def age_days(stamp: str | None) -> float | None:
     return None if mins is None else round(mins / 1440, 2)
 
 
+def _opens_with_dispatch(head: str) -> bool:
+    """True when a transcript's first prompt is an Orca worker's dispatch.
+
+    Only the records before the first assistant turn are looked at. Later in
+    a session the same words can appear in anybody's transcript (a
+    coordinator that prints a worker's preamble, a search result); as the
+    first prompt they mean one thing.
+    """
+    for line in head.split("\n"):
+        if '"type":"assistant"' in line:
+            return False
+        if '"type":"user"' in line and ORCA_WORKER_PROMPT.search(line):
+            return True
+    return False
+
+
+# ── who may read, and who may write ───────────────────────────────────
+#
+# On loopback there is no token: the board trusts "this machine". But a
+# request from this machine is not the same thing as the owner. Any web page
+# open in a browser here can ask the browser to talk to 127.0.0.1, and two
+# things stood open until 13 Nov 2026:
+#
+#   * Writes. A page could send `{"q": …, "answer": …}` to /answer as
+#     text/plain, a "simple" request the browser sends without asking the
+#     server first, and the board recorded it as the owner's ruling. (Review:
+#     a POST carrying `Origin: https://example.invalid` got 201.)
+#   * Reads. A page can point a name it controls at 127.0.0.1; the browser
+#     then treats the board as that page's own site and hands it everything
+#     it asks for. (Re-check: `GET /report.json` with `Host: evil.example`
+#     returned 200: every decision and answer, repo paths, commit subjects,
+#     task titles, and the shots.)
+#
+# One check covers both: a request from this machine must be addressed to it
+# by one of its own names (`host_refusal`). Writes carry three more
+# (`write_refusal`). The page's own requests pass all of them unchanged, and
+# so does a plain client such as curl.
+LOOPBACK_CLIENTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+# The names under which this machine reaches itself. A board opened in a
+# browser on this machine is addressed by one of these and by nothing else.
+LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1")
+# For an owner who reads the board under another name (a name in /etc/hosts, a
+# tunnel, a reverse proxy): STATUS_BOARD_HOSTS=name1,name2 in the server's
+# environment, read once at start-up. Explicit on purpose. A foreign name is
+# exactly what an attacker's request looks like, so the board does not guess
+# which ones are the owner's, not even this machine's own hostname.
+HOSTS_ENV = "STATUS_BOARD_HOSTS"
+# A bare host and an optional port, as a browser writes the Host header. A
+# user part (`evil.example@127.0.0.1`) or anything else is not a host.
+HOST_HEADER = re.compile(r"^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::\d{1,5})?$")
+
+
+def _hostname(host_header: str) -> str:
+    """`127.0.0.1:8839` -> 127.0.0.1, `[::1]:8839` -> ::1, not a host -> ""."""
+    match = HOST_HEADER.match(host_header.strip().lower())
+    return match.group(1).strip("[]") if match else ""
+
+
+def allowed_hosts(env=os.environ) -> frozenset[str]:
+    """The loopback names, plus whatever STATUS_BOARD_HOSTS adds."""
+    listed = re.split(r"[,\s]+", (env.get(HOSTS_ENV) or "").strip())
+    return frozenset({*LOOPBACK_NAMES, *filter(None, map(_hostname, listed))})
+
+
+def host_refusal(headers, from_loopback: bool, names: frozenset[str]) -> tuple[int, str] | None:
+    """Why a request from this machine is not served, as (status, reason), or
+    None when it is.
+
+    The Host header is what the browser was told to connect to. Under a name
+    that is not this machine's, the request comes from a page that pointed
+    its own name here, and whatever is answered goes to that page. Requests
+    from other machines are not judged here: they have had to carry the token.
+    """
+    if not from_loopback:
+        return None
+    asked = (headers.get("Host") or "").strip().lower()
+    if _hostname(asked) in names:
+        return None
+    shown = asked if HOST_HEADER.match(asked) else "a name that is not a host"
+    return 403, (
+        "This board is served only under this machine's own names "
+        f"(127.0.0.1, localhost). It was asked for as {shown}. To read it "
+        f"under another name, start it with {HOSTS_ENV}=<that name>."
+    )
+
+
+def _origin_of(url: str) -> str:
+    """scheme://host[:port] of a URL, lower-cased; "" when it has none."""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}".lower() if parts.scheme and parts.netloc else ""
+
+
+def write_refusal(headers, from_loopback: bool, names: frozenset[str]) -> tuple[int, str] | None:
+    """Why a POST may not write, as (status, reason), or None when it may.
+
+    1. The body must be declared `application/json`. A page on another site
+       cannot send that without the browser first asking this server, which
+       does not answer such a question; the request is then never sent.
+    2. A browser that says where the request comes from (`Sec-Fetch-Site`)
+       must say `same-origin`.
+    3. `Origin`, or failing that `Referer`, must be this board's own origin:
+       the scheme and the `Host` the request itself was addressed to.
+    4. The check every request gets, `host_refusal`: without it a page can
+       point a name of its own at 127.0.0.1 and then pass check 3, because it
+       is asking "itself".
+    """
+    kind = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if kind != "application/json":
+        return 415, "The board records only requests sent as application/json."
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site and site != "same-origin":
+        return 403, "The board records only requests made by its own page."
+    host = (headers.get("Host") or "").strip().lower()
+    own = f"http://{host}"
+    origin = headers.get("Origin")
+    referer = headers.get("Referer")
+    if origin is not None:
+        if _origin_of(origin) != own:
+            return 403, "The board records only requests made by its own page."
+    elif referer is not None and _origin_of(referer) != own:
+        return 403, "The board records only requests made by its own page."
+    return host_refusal(headers, from_loopback, names)
+
+
 def make_handler(board: Board, token: str | None = None):
+    names = allowed_hosts()
+
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(HERE), **kw)
@@ -840,9 +1146,39 @@ def make_handler(board: Board, token: str | None = None):
                 )
             super().end_headers()
 
+        def from_this_machine(self) -> bool:
+            return bool(self.client_address) and self.client_address[0] in LOOPBACK_CLIENTS
+
+        def refused_by_name(self) -> bool:
+            """True, with the refusal already sent, when a request from this
+            machine is addressed to a name that is not this machine's."""
+            refusal = host_refusal(self.headers, self.from_this_machine(), names)
+            if refusal is None:
+                return False
+            body = refusal[1].encode()
+            self.send_response(refusal[0])
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return True
+
+        def do_HEAD(self):  # noqa: N802 - stdlib naming
+            if not self.authorised():
+                return self.deny()
+            if self.refused_by_name():
+                return None
+            return super().do_HEAD()
+
         def do_GET(self):  # noqa: N802 - stdlib naming
             if not self.authorised():
                 return self.deny()
+            # Every read, not only report.json: the page, the report and the
+            # shots all answer to the same names (see host_refusal).
+            if self.refused_by_name():
+                return None
             # Persist the token so the page's relative fetches, which carry no
             # query string, keep working after the first load.
             if token and "k=" in (self.path or ""):
@@ -862,13 +1198,18 @@ def make_handler(board: Board, token: str | None = None):
             field rather than merged wholesale. Bound beyond loopback a token is
             required, checked here as well as on GET: a write path left open
             because only the read path was guarded is the classic version of
-            this mistake.
+            this mistake. A local reader is not the same thing as any page the
+            local browser has open, so the request must also come from the
+            board's own page or from a plain client: see `write_refusal`.
             """
             if not self.authorised():
                 return self.deny()
             route = self.path.split("?")[0].rstrip("/")
             if route not in ("/backlog", "/answer"):
                 return self.send_error(404)
+            refusal = write_refusal(self.headers, self.from_this_machine(), names)
+            if refusal is not None:
+                return self.send_json(refusal[0], {"ok": False, "error": refusal[1]})
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 # board.MAX_BODY_BYTES, not a literal here: this gate exists
@@ -891,10 +1232,13 @@ def make_handler(board: Board, token: str | None = None):
                         raise ValueError(f"No backlog item with id {payload['id']}.")
                 else:
                     item = board.add_item(payload)
-                body, code = json.dumps({"ok": True, "item": item}).encode(), 201
+                code, answer = 201, {"ok": True, "item": item}
             except Exception as exc:
-                body = json.dumps({"ok": False, "error": str(exc)}).encode()
-                code = 400
+                code, answer = 400, {"ok": False, "error": str(exc)}
+            self.send_json(code, answer)
+
+        def send_json(self, code: int, payload: dict) -> None:
+            body = json.dumps(payload).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -925,6 +1269,18 @@ def make_handler(board: Board, token: str | None = None):
         #     images. Living beside narrative.json, they last exactly as long
         #     as the words that cite them.
         SHOT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+        # A shot is a picture, and it is served as nothing more. An SVG is
+        # also a document: opened in a tab of its own, which is what a click
+        # on any shot does, it ran its scripts as the board's own page. A
+        # hostile SVG copied into shots/ could then read the board and record
+        # an answer that passed every check on writes, because it was the
+        # same origin (re-check of 13 Nov 2026: `SVG-RECHECK injected` landed
+        # in answers.json). `sandbox` gives such a document an origin of its
+        # own and runs no script in it; the rest lets through only what a
+        # still picture needs: its own styles, and images and fonts embedded
+        # in it. Sent with every shot, not only .svg: one rule, no list of
+        # types to keep right.
+        SHOT_POLICY = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"
         SHOT_TYPES = {
             ".png": "image/png",
             ".jpg": "image/jpeg",
@@ -960,6 +1316,7 @@ def make_handler(board: Board, token: str | None = None):
             # name, so the narrative citing it changes in the same edit.
             self.send_header("Cache-Control", "private, max-age=300")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", self.SHOT_POLICY)
             self.end_headers()
             self.wfile.write(body)
 
@@ -1033,6 +1390,9 @@ if __name__ == "__main__":
     repo = Path(args.repo).expanduser().resolve()
     board = Board(repo, args.name)
     port = args.port or port_for(repo)
+    # Ask Orca once now, in the background, so its answer is usually in hand
+    # before the first page load. Costs nothing when there is no `orca`.
+    board.orca.view(board.project_paths())
 
     # Binding beyond loopback exposes repo paths, branch names, commit subjects
     # and every decision on the board to anything on the network, and the board
