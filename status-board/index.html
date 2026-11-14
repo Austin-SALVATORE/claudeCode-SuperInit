@@ -1733,7 +1733,9 @@ function moveBy(dy){
   const short = want - (de.scrollHeight - de.clientHeight)
   if(short > 0) setSlack(slack + short)
   window.scrollTo(window.scrollX, want)
-  return Math.abs(window.scrollY - from) >= 0.5
+  const moved = Math.abs(window.scrollY - from) >= 0.5
+  if(moved) holdRecords()   // round 4: what it brought under the pointer cannot be worked by the same press
+  return moved
 }
 // Brings `el` into the window by the least that shows it. `whole`: its end
 // too, as far as its start can stay under the bar. `y`: where the pointer
@@ -1903,7 +1905,31 @@ function pillBox(){
   const opt = pill.closest('.opt'), box = pill.getBoundingClientRect()
   return { q: opt.dataset.q, a: opt.dataset.a, x: box.left, y: box.top }
 }
-const holdPill = ms => { ui.pillHeldUntil = Math.max(ui.pillHeldUntil, Date.now() + ms) }
+// Addition to round 4 (finding 4 of the review of round 3). The hold was
+// counted from the moment the press was handled, before the browser had
+// drawn the moved pill, and it was read against the clock when the next
+// press was handled: on a page that stalled for 1.3 s between two presses,
+// the second one recorded at once on a pill nobody had seen arrive. Now the
+// hold is taken again once that frame is on the screen, the pill asks for as
+// long as the frame is not, and a press counts from when it was made.
+const afterPaint = fn => requestAnimationFrame(() => setTimeout(fn, 0))
+let pillUnpainted = 0
+//
+// One clock (14 Nov 2026, the review of the addition). The hold was written
+// with Date.now() and a press was read as performance.timeOrigin +
+// ev.timeStamp: two clocks. Where they are apart (the wall clock set forward,
+// a machine that slept with the board open), every press was read as older
+// than the hold and the pill asked for ever. A hold is now written in the
+// page's own clock, performance.now(), which the wall clock cannot move, and
+// a press is read on that same clock (`pressTime`, in round 4's block).
+const holdPill = ms => {
+  const hold = () => { ui.pillHeldUntil = Math.max(ui.pillHeldUntil, performance.now() + ms) }
+  hold(); pillUnpainted++
+  afterPaint(() => { pillUnpainted--; hold() })
+}
+// May this press on the pill record at once? `wasBusy()` says that the page
+// has just been stuck (round 4's block, below): a page that was stuck asks.
+const pillFree = ev => pillUnpainted === 0 && !wasBusy() && Math.min(pressTime(ev), pressBegan) >= ui.pillHeldUntil
 const headerTop = key => {
   const head = [...document.querySelectorAll('[data-openq]')].find(n => n.dataset.openq === key)
   return head ? head.getBoundingClientRect().top : null
@@ -1921,7 +1947,7 @@ function guardPill(paintFn, openedKey = null){
     const stayed = headBefore !== null && headAfter !== null && Math.abs(headAfter - headBefore) <= 2
     // A new question, opened on purpose: an older hold was about another
     // card and no longer applies either way.
-    ui.pillHeldUntil = stayed ? 0 : Date.now() + PILL_SETTLE_MS
+    ui.pillHeldUntil = stayed ? 0 : performance.now() + PILL_SETTLE_MS   // one clock: was Date.now()
     return
   }
   if(before && (before.q !== after.q || before.a !== after.a)) holdPill(PILL_REREAD_MS)
@@ -2137,8 +2163,10 @@ function promptOther(question){
     const ta = d.querySelector('textarea')
     const go = d.querySelector('button.go')
     // An empty answer is not an answer; keep the button inert until there is text.
-    const sync = () => { go.disabled = !ta.value.trim() }
+    // round 4: nor while the press that opened the dialog could still reach it.
+    const sync = () => { go.disabled = !ta.value.trim() || performance.now() < recordHeldUntil }
     ta.addEventListener('input', sync); sync()
+    whenRecordsFree(sync)
     d.addEventListener('close', () => {
       const text = ta.value.trim()
       d.remove()
@@ -2181,7 +2209,9 @@ function confirmDivergence(question, answer, recommended){
       resolve(ok)
     }, { once: true })
     d.showModal()
-    d.querySelector('button.go').focus()
+    // round 4: it started on Confirm, and the press that opened the dialog
+    // could go on to confirm it.
+    settleConfirm(d)
   })
 }
 
@@ -2243,7 +2273,7 @@ async function answer(b, ev){
   // ...and it belongs to a pill that has stayed where the owner saw it. A
   // pill the page has just moved, or just put a different answer under,
   // asks like everything else until the hold runs out: see guardPill().
-  const instant = recommended && viaPill && Date.now() >= ui.pillHeldUntil
+  const instant = recommended && viaPill && pillFree(ev)
   // Read everything off the button now: a poll can repaint this card while a
   // dialog is open, and the button in hand would then be a detached node.
   const question = b.dataset.q, project = b.dataset.project
@@ -2328,6 +2358,118 @@ function gotoWorkstream(id){
     const btn = row.querySelector('.ws-row')
     if(btn) btn.focus({ preventScroll: true })
   }
+}
+
+// ── a press that brings up a control that records cannot also work it ──
+// Found by the review of 14 Nov 2026: a double click or a double tap on an
+// option that is not the pill recorded it. The confirmation came up with the
+// keyboard already on "Confirm this choice", in a narrow window also under
+// the pointer, and the second press of the same gesture landed on it. Enter
+// twice, Enter held down and Space twice did the same at every width. The
+// dialog exists so that a stray press records nothing, and one stray gesture
+// went through it.
+//
+// The rule, for every control that sends something to the server: the press
+// that brings it up, or brings it under the pointer, is never the press that
+// works it. A press on a button or on a section's line holds every such
+// control for 600 ms, and a held control takes only a press that BEGAN after
+// the hold ran out: the pointer went down, or the key did. A key that is
+// held down began once, so its repeats work nothing. The owner who means it
+// waits six tenths of a second, which is less than reading the dialog takes.
+//
+// The pill is not in this list: it records without asking, and its own code
+// says when (see "the pill must be where the owner last saw it"). Since the
+// addition to round 4 the same rule is kept for it there: every press on a
+// control holds the pill for these 600 ms too.
+const RECORD_SETTLE_MS = 600
+const RECORDS = 'dialog.confirm button.go[value="confirm"],[data-done],#compose button[type="submit"]'
+let pressBegan = 0          // when the press now under way began (not a key's repeats)
+// One clock (14 Nov 2026). Every hold on this page is written in the page's
+// own clock, performance.now(), and a press is read on it. An event carries
+// the moment it was made, and that is the moment wanted: a press that waited
+// its turn, in the page or on its way to the page, was made earlier than it
+// is handled. So an event's stamp is believed whenever it can be this clock's:
+// not later than now, and less than five seconds old. Within those five
+// seconds a press is never read as made later than it was made.
+// A stamp outside them is not a press that waited: it is a browser that
+// stamps events on another clock (the time since 1970, or a clock that went
+// on while the machine slept and this one did not). To believe it would hold
+// for ever, or never. Such a press is read as made 100 ms before it is
+// handled, which is as early as it can be known to have been made.
+// (A first version, on the preview from 21:39 to the next one, believed a
+// stamp only up to half a second old, and read an older one as made just
+// before it was handled: later than it was made. Input that reached the page
+// 0.7 s late, the page itself free, got through a hold. Found by the review.)
+const STAMP_BOUND_MS = 5000, STAMP_SLACK_MS = 100
+const pressTime = ev => {
+  const now = performance.now(), made = ev.timeStamp
+  return made <= now + 5 && now - made < STAMP_BOUND_MS ? made : now - STAMP_SLACK_MS
+}
+let recordHeldUntil = 0
+// Addition to round 4. The hold is taken when the press is handled, and taken
+// again once the frame that shows its result is on the screen: on a page
+// that stalls, the six tenths of a second begin when the owner can see what
+// came up, not before. Until that frame, everything that records is held.
+let recordsUnpainted = 0
+const holdRecords = () => {
+  const hold = () => { recordHeldUntil = Math.max(recordHeldUntil, performance.now() + RECORD_SETTLE_MS) }
+  hold(); recordsUnpainted++
+  afterPaint(() => { recordsUnpainted--; hold() })
+}
+const tooEarly = () => recordsUnpainted > 0 || wasBusy() || pressBegan < recordHeldUntil
+// A page that is stuck shows the owner nothing, and its clock runs on all the
+// same. So the page takes its own pulse ten times a second. A beat that comes
+// late means it was stuck: everything that records, the pill too, is then
+// held for 0.6 s from the moment it is free again, and until that late beat
+// has come, a press is taken as too early.
+const BUSY_MS = 300
+let beat = performance.now()
+const wasBusy = () => performance.now() - beat > BUSY_MS
+setInterval(() => {
+  if(wasBusy()){ holdRecords(); holdPill(RECORD_SETTLE_MS) }
+  beat = performance.now()
+}, 100)
+// Runs `fn` once nothing holds what records any more.
+const whenRecordsFree = fn => {
+  const wait = recordsUnpainted > 0 ? RECORD_SETTLE_MS : recordHeldUntil - performance.now()
+  wait > 0 ? setTimeout(() => whenRecordsFree(fn), wait + 20) : fn()
+}
+
+document.addEventListener('pointerdown', ev => { pressBegan = pressTime(ev) }, true)
+document.addEventListener('keydown', ev => {
+  if(!ev.repeat){ pressBegan = pressTime(ev); return }
+  // A key held down does not press a button a second time, or send the form.
+  if((ev.key === 'Enter' || ev.key === ' ') && ev.target instanceof Element && ev.target.closest('button,summary,#compose input')) ev.preventDefault()
+}, true)
+// Before every other listener: a press that came too early is not seen by any
+// of them, and does nothing of its own either.
+document.addEventListener('click', ev => {
+  const t = ev.target instanceof Element ? ev.target : null
+  if(!t) return
+  if(t.closest(RECORDS)){
+    if(tooEarly()){ ev.preventDefault(); ev.stopImmediatePropagation(); return notSent() }
+    // It worked. What it leaves under the pointer is held in its turn, once
+    // this press is through (a form is sent after the click, in the same press).
+    setTimeout(holdRecords, 0)
+  // "Add an item" holds nothing: the form it opens refuses an empty title,
+  // so the press that opens it cannot send it, and a title typed or pasted
+  // straight away is sent at the first Enter.
+  } else if(t.closest('button,summary') && !t.closest('#addtoggle')) holdRecords()
+}, true)
+document.addEventListener('submit', ev => {
+  if(ev.target instanceof HTMLFormElement && ev.target.id === 'compose' && tooEarly()){ ev.preventDefault(); ev.stopImmediatePropagation(); notSent() }
+}, true)
+// A press that was stopped says so. In a dialog the button is shown as not
+// ready and takes no press at all; a button in the page has no such look.
+const notSent = () => toast('That press came too soon after the last one, so nothing was sent. Press again if you meant it.')
+// The confirmation comes up with the keyboard on Cancel, so a second Enter or
+// Space cancels, and with its Confirm shown as not yet ready for as long as
+// it is held.
+function settleConfirm(d){
+  const go = d.querySelector('button.go')
+  go.disabled = true
+  whenRecordsFree(() => { go.disabled = false })
+  d.querySelector('button[value="cancel"]').focus()
 }
 
 // One listener for the whole page. Sections are repainted from strings, so
@@ -2436,6 +2578,12 @@ document.addEventListener('click', ev => {
 document.addEventListener('click', () => {
   const p = press
   press = null
+  // Addition to round 4 (finding 3 of the review of round 3): round 4's rule,
+  // kept for the pill. A press that opens a question arms its pill at 0 when
+  // the header stayed (guardPill), and the check below held it only within 12
+  // px of the point pressed: a second press landing 31 to 60 px lower recorded
+  // at once. Now every press on a control holds the pill for 0.6 s.
+  if(p) holdPill(RECORD_SETTLE_MS)
   const at = !p ? null : p.pointer ? p : pointerAt
   const pill = at && document.querySelector('.q.open .opt.rec .pick')
   if(!pill) return

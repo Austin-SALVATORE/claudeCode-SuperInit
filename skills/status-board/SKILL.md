@@ -73,13 +73,29 @@ description: Report to the owner on a live local web page instead of prose. Use 
    - Keyboard activation confirms, because the pill is not separately
      focusable — the safe direction, and worth knowing rather than
      mistaking for a bug.
+   - **The press that brings up the confirmation can never be the press
+     that confirms it.** The confirmation comes up with the keyboard on
+     Cancel, and "Confirm this choice" is held, and shown dimmed, for at
+     least 0.6 s. A second Enter or Space cancels; it can never record.
+     From the keyboard a confirmation is Enter, Tab, Enter. The same hold
+     is on "Record this answer", "Mark done" and "Add to backlog": a press
+     on one of them within 0.6 s of another press is not sent, and the
+     page says so. (14 Nov 2026: in every version up to 2.0.0 a double
+     click, a double tap, Enter pressed twice or Enter held down on an
+     option recorded it, because the confirmation came up with Confirm
+     under the press.)
    - **A pill the page has just moved confirms too.** The pill is safe
      to exempt only while it stays where the owner saw it. For about a
      second after a repaint moved it, and for five seconds after a
      repaint changed the answer under it, a hit on it asks like any
-     other target. The owner opening a question arms its pill at once,
-     unless opening it moved the list under the pointer (the question
-     above it closed): then it holds like any other move.
+     other target. The owner opening a question does not arm its pill at
+     once: for 0.6 s after a press that opens a question, or works any
+     other control of the page, a press on the pill asks. It asks for
+     1.2 s when the press moved the pill on the screen, or brought it up
+     within 12 px of the point pressed. A hold counts from the frame that
+     shows the pill, a press counts from the moment it was made, and a
+     page that was stuck for more than 0.3 s asks for 0.6 s once it is
+     free again.
    - **The page opens one question by itself, once, when it loads.**
      After that only the owner opens one. If the open question leaves
      `decisions`, its card closes and nothing opens in its place.
