@@ -293,7 +293,7 @@ Where that row comes from depends on how the project is run:
   this project's checkout. Each **worker** shows the role that opens
   its Task title, the title, its state and when it last moved, which is
   the time of the agent's last status event. A worker whose title
-  carries a workstream id (`architect | WS-03 | options for ADR-25`)
+  carries a workstream id (`architect | WS-03 | options for the data store`)
   also appears on that workstream's row. Any other session in the
   project shows under its own terminal title, as a `session`. A worker
   is listed while its agent is there: working, waiting on a prompt only
@@ -613,13 +613,13 @@ so a teammate's commit or a rewritten narrative appears on its own.
     "note": "Why these belong together.",      // optional; folded to two lines
     "items": [{
       "id": "WS-00",                           // what a Task title must carry to be linked
-      "name": "Operating model with Orca",     // visible without a click
+      "name": "Team set-up",                   // visible without a click
       "status": "Active",                      // visible without a click: the word, as you write it
       "next": "The worker's report.",          // visible without a click
       "goal": "What done looks like.",         // on demand, like everything below
       "stands": "Where it stands today.",
-      "forecast": "English page by Fri 13 Nov (ours).",
-      "record": "`WS-00-operating-model.md`",
+      "forecast": "First draft by Friday (ours).",
+      "record": "`WS-00-team-set-up.md`",
       "details": [{ "label": "What the owner has set", "text": "…" }]   // optional extra lines
     }]
   }]
@@ -647,7 +647,7 @@ on the page, and the owner reads the copy.
 **Status is a word, and you choose it.** The page prints the word you
 wrote and counts rows by it. These also get a shape and a colour, so the
 list can be read down its edge: `Active`, `Waiting on …` (`Waiting on
-PL`, `Waiting on you`), `Ready`, `Blocked`, `Not started`, `Parked`,
+QA`, `Waiting on you`), `Ready`, `Blocked`, `Not started`, `Parked`,
 `Done`. Any other word still renders, in a plain tag, and gets its own
 count and filter. Use the project's own status words and keep them few:
 six statuses filter well, sixteen do not.

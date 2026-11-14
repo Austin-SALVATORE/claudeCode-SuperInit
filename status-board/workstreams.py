@@ -9,7 +9,7 @@ that into the one shape the page reads, and adds the two things the agent
 must not type because the board can measure them:
 
   * which Orca workers are on a workstream, from the id in a Task title
-    (`architect | WS-03 | options for ADR-25` -> WS-03);
+    (`architect | WS-03 | options for the data store` -> WS-03);
   * whether the file the list was copied from has changed since the board was
     last written. The list on the board is a copy of the project's register,
     and a copy is a second source of truth. When `source` names a file in the
