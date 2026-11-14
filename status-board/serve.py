@@ -1127,6 +1127,36 @@ def make_handler(board: Board, token: str | None = None):
             self.end_headers()
             self.wfile.write(body)
 
+        # No board is ever shown inside a frame of another page.
+        #
+        # Until 14 Nov 2026 no response said so, and a board has one control
+        # that is expensive to press: the pill that records an answer. A page
+        # the owner visited could hold a board in an iframe at opacity 0.05,
+        # place the pill under the pointer, and take one click as the owner's
+        # ruling. The POST then comes from the board's own page, so the checks
+        # on writes (write_refusal) all pass: they cannot tell a frame from a
+        # tab. (Reviewer, 14 Nov 2026: a real click on the top page recorded
+        # the recommended answer; answers.json grew by one. Every release up to
+        # 2.0.1 had it.) The board is never meant to be framed, not even by
+        # itself, so every response forbids it, in both forms: X-Frame-Options
+        # for browsers that predate CSP, `frame-ancestors` for the rest.
+        #
+        # One place, end_headers, because every response ends there: the page,
+        # the report, the shots, the redirects and listings of the static
+        # handler, and send_error's refusals alike. A response that names a
+        # policy of its own (a shot: SHOT_POLICY) must not get a second
+        # Content-Security-Policy header, which a browser enforces as another
+        # policy beside the first rather than as part of it; send_header holds
+        # such a policy back and end_headers sends one header that has both.
+        # Nothing is added for scripts or styles: that is a change of its own.
+        FRAME_POLICY = "frame-ancestors 'none'"
+
+        def send_header(self, keyword: str, value: str) -> None:
+            if keyword.lower() == "content-security-policy":
+                self._held_policies = [*getattr(self, "_held_policies", []), value]
+                return None
+            return super().send_header(keyword, value)
+
         def end_headers(self):  # noqa: N802 - stdlib naming
             # The page never re-fetches itself: the 3s poll refreshes report.json
             # only. So without this, an open tab keeps running whatever HTML it
@@ -1144,6 +1174,13 @@ def make_handler(board: Board, token: str | None = None):
                     "Set-Cookie",
                     f"board_k={token}; Path=/; SameSite=Strict; Max-Age=604800",
                 )
+            held = ", ".join(getattr(self, "_held_policies", []))
+            self._held_policies = []
+            super().send_header("X-Frame-Options", "DENY")
+            super().send_header(
+                "Content-Security-Policy",
+                f"{held}; {self.FRAME_POLICY}" if held else self.FRAME_POLICY,
+            )
             super().end_headers()
 
         def from_this_machine(self) -> bool:
