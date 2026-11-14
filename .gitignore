@@ -7,6 +7,8 @@ boards/
 
 # Local tool state, not part of the plugin.
 .omc/
+# A browser tool's local output, not part of the plugin.
+.playwright-mcp/
 
 .DS_Store
 __pycache__/
