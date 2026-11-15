@@ -1,5 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "modules": ["./board-link.tsx"],
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -45,7 +46,7 @@
             "timeout": 10
           }
         ],
-        "description": "Offer the bootstrap in a folder with no team structure. A new session in a new folder never suggested /project-bootstrap, so the working practice this plugin exists to provide arrived only if the owner remembered to ask. A hook cannot run a skill, only instruct the agent, so this is an instruction — and it insists on the order: ask what the project is and who works on it, get a yes, only then scaffold. Silent when .claude/rules/team-roles.md exists at the cwd or its git top-level (a bare .claude/ proves nothing: Claude Code creates settings.local.json itself), in $HOME, / and ~/.claude, on resume/compact/fork, in an agent session, and when opted out (PROJECT_INIT_NO_OFFER=1, or an empty .claude/no-bootstrap-offer). Fails quiet: any error prints nothing and exits 0, so a bug costs the offer, not the session. A pane teammate is recognised by agent_type/agent_id, or by --agent-id/--parent-session-id on an ancestor process; neither has been seen in a live teammate yet, so one may still see the offer — noise, not damage. An Orca worker is a plain claude process with neither tell; it is recognised from a dispatch that Orca lists as still live on its terminal (hooks/orca_session.py), on one observation that the record exists before SessionStart. A settled worker's terminal does not count."
+        "description": "Offer the Orca bootstrap, only inside Orca (ORCA_TERMINAL_HANDLE set), in a git project that has no Orca operating model. A new session in a new project never suggested /project-bootstrap, so the working practice this plugin exists to provide arrived only if the owner remembered to ask. A hook cannot run a skill, only instruct the agent, so this is an instruction — and it insists on the order: ask what the project is, get a yes, only then scaffold. Silent when .claude/rules/operating-model.md exists at the cwd, its git top-level or its main checkout (found without git, from a worktree's .git file, so the worktree of a bootstrapped project is silent even before the scaffold is committed on its branch; a bare .claude/ proves nothing: Claude Code creates settings.local.json itself), outside Orca, in a folder that is not a git project, in $HOME, / and ~/.claude, on resume/compact/fork, in an agent session, in a run nobody attends (claude -p and the SDK: Claude Code sets CLAUDE_CODE_SESSION_ATTENDED=0 and a CLAUDE_CODE_ENTRYPOINT starting with sdk there), and when opted out (PROJECT_INIT_NO_OFFER=1, or an empty .claude/no-bootstrap-offer in the project). A project with the older set only (.claude/rules/team-roles.md, no operating-model.md) is told once, instead of the offer, that /project-bootstrap update exists. Nothing here edits a repository. Fails quiet: any error prints nothing and exits 0, so a bug costs the offer, not the session. A pane teammate is recognised by agent_type/agent_id, or by --agent-id/--parent-session-id on an ancestor process; neither has been seen in a live teammate yet, so one may still see the offer — noise, not damage. An Orca worker is a plain claude process with neither tell; it is recognised from a dispatch that Orca lists as still live on its terminal (hooks/orca_session.py), on one observation that the record exists before SessionStart. A settled worker's terminal does not count."
       },
       {
         "hooks": [
@@ -120,16 +121,6 @@
           }
         ],
         "description": "The start of a Bash call that names narrative.json: stores the file's signature, so that the end of the call (PostToolUse) can tell whether this call changed it. A Bash call's Pre and Post carry the same tool_use_id, Pre first, for a session and for a subagent too (spike of 14 Nov 2026, Claude Code 2.1.325). Same shell test as there: no Python for a command that does not mention the file."
-      },
-      {
-        "matcher": "Agent|Task|SendMessage",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/tree-lock-guard.py\""
-          }
-        ],
-        "description": "Deny a dispatch that would grant a second agent the working tree while another already holds it — \"one agent owns the working tree at a time\" was already written in team-roles.md and verification.md and was broken twice anyway, including once while the lead was actively quoting it. A rule that has been read and re-broken is proof the rule is the wrong instrument; this is the mechanism instead. Silent for a dispatch that is not tree-mutating (repo-inventory, architect, qa), for isolation: \"worktree\" dispatches, and for a role resuming itself. See status-board/tree_lock.py for the lock state both this hook and the board read."
       }
     ]
   }

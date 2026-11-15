@@ -58,17 +58,14 @@ class ThreadingHTTPServer(ThreadingHTTPServer):  # noqa: F811
     request_queue_size = 128
 
 
-# Sibling module in this same directory, not a standalone script invoked
+# Sibling modules in this same directory, not standalone scripts invoked
 # from elsewhere — unlike the hooks/ scripts, which duplicate this file's
 # helpers rather than import them because they run from a different
 # working directory. `serve.py`'s own directory is on `sys.path[0]`
-# automatically, so this import needs nothing extra.
-import tree_lock
-
-# Two more siblings, same reasoning. `orca_crew` reads who is working from
-# Orca when the project is run there; `workstreams` shapes the workstream
-# list. Importing either starts nothing: hooks/revive-board.py imports this
-# file only for `slug_for` and `port_for`.
+# automatically, so these imports need nothing extra. `orca_crew` reads who is
+# working from Orca when the project is run there; `workstreams` shapes the
+# workstream list. Importing either starts nothing: hooks/revive-board.py
+# imports this file only for `slug_for` and `port_for`.
 import orca_crew
 import workstreams
 
@@ -935,20 +932,11 @@ class Board:
             else "none",
             "tree": tree,
         }
-        # Read-only here — this row exists so the owner can see who holds the
-        # tree without asking, the same argument as every other row in this
-        # dict. `hooks/tree-lock-guard.py` is the actual enforcement; this
-        # never writes the lock, only reports it. `"none"` (not "free")
-        # deliberately reuses tone()'s existing green-if-none rule on the
-        # client, rather than adding a client-side case for a second word
-        # that means the same thing.
-        lock = tree_lock.status(self.repo)
-        if lock.get("held"):
-            mins = lock.get("ageMin")
-            age = f"{mins:.0f}m" if isinstance(mins, (int, float)) else "?"
-            state["lock"] = f"{lock.get('holder', '?')} ({age})"
-        else:
-            state["lock"] = "none"
+        # There is no `lock` row: the tree lock was retired on 15 Nov 2026 (2.2.0).
+        # Under Orca the rule is one writing worker per worktree, and the page
+        # prints whatever rows `state` has, so nothing there changed. A lock
+        # file that an older version left in a board's folder is read by
+        # nothing, and is left where it is.
         for label in ("tests", "typecheck", "lint", "build"):
             if label in checks:
                 state[label] = checks[label]

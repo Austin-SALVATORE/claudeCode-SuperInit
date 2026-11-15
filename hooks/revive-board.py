@@ -83,8 +83,9 @@ def read_payload() -> dict:
 def load_serve():
     """serve.py as a module, without writing bytecode into the plugin dir.
 
-    It does a sibling `import tree_lock`, so its own directory goes on sys.path;
-    the `__main__` guard keeps the server from starting."""
+    It imports sibling modules (`orca_crew`, `workstreams`, `front_door`), so its
+    own directory goes on sys.path; the `__main__` guard keeps the server from
+    starting."""
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(SERVE_PY.parent))
     spec = importlib.util.spec_from_file_location("_project_init_serve", SERVE_PY)

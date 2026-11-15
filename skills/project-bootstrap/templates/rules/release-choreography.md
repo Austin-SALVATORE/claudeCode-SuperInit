@@ -16,8 +16,8 @@ inconsistent.
   committed is an outage with a green test suite behind it.
 - **A change and its reconciliation commit travel in one push.** Nothing
   is released between them.
-- **Targeted `git add` only** — never `-A` or `.`. Other teammates have
-  work in the same tree, and staging theirs by accident is how
+- **Targeted `git add` only** — never `-A` or `.`. Another worker may be
+  writing in the same worktree, and staging its work by accident is how
   half-finished work ships.
 - Commit at phase boundaries, with messages that state **what was
   verified**, not just what changed.
