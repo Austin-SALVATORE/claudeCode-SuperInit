@@ -6,20 +6,36 @@ import type { Register } from 'claude-code'
 // status-board/board_link.py, which finds the project, the board and the name the way 2.1.0 does and prints the address or
 // nothing. This file asks it and draws the answer. It sends no request (the helper reads files), writes nothing, and any
 // failure draws nothing.
+//
+// Release 2.3.0: where the link shows is the owner's choice, two switches of the plugin's own (`userConfig` in plugin.json,
+// the dialog when the plugin is installed, the /config rows, `pluginConfigs` in the user's settings):
+//   board_link_row          (default on)   the row above the prompt, as in 2.2.x;
+//   board_link_status_line  (default off)  the link in the status line, put there by /project-init:board-link.
+// The row is drawn when the first is on, or when the second is on and the link has not been seen in the status line in the
+// last ten minutes (the status line's filter touches a file each time it places the link; the helper says which file). Both
+// off: nothing is drawn. So the link is never lost: a status line that stops showing it gives the row back by itself.
+// The mod reads `options` once, in `register`: Claude Code reloads the mod with the new values when they change, from /config
+// or in the settings file (spike of 15 Nov 2026), so no `config.set` hook and no re-read of the settings is needed.
 
-const POLL_MS = 10_000 // how often the two folders below are looked at: $.fs.stat, no process is started
+const POLL_MS = 10_000 // how often the folders below are looked at: $.fs.stat, no process is started
 const REFRESH_MS = 300_000 // the helper is started at least this often whatever the folders did: a server that died changes no file
+const SEEN_MS = 600_000 // the link counts as shown in the status line for ten minutes after the filter last placed it
 
 type Shown = { url: string; up: boolean }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const wantsRow = options?.board_link_row !== false // on unless the owner turned it off: the default, and a Claude Code that gave no options
+  const wantsStatusLine = options?.board_link_status_line === true
   let shown: Shown | null = null
   let state: string | null = null // the status-board home the helper read: where a new board shows up
+  let seenPaths: string[] = [] // the files whose times say when the status line last showed the link (from the helper)
+  let isSeen = false // the status line showed the link in the last SEEN_MS
   let isAgent = false
   let seen = '' // the times of servers/ and boards/ when the helper last ran
   let lastRun = 0
   let isRunning = false
   let isStarted = false
+  const isWanted = (): boolean => wantsRow || (wantsStatusLine && !isSeen)
 
   on('session.start', async ($, e, next) => {
     // Nobody is at the prompt under claude -p or the SDK: there is no band to draw, and nothing to ask for.
@@ -43,6 +59,26 @@ export const register: Register = on => {
       return times.join(',')
     }
 
+    // Only a mod that waits for the status line looks at the marker: with the row kept on the rule does not need it.
+    const looksAtMarker = async () => {
+      if (wantsRow || !wantsStatusLine || seenPaths.length === 0) {
+        return
+      }
+
+      let newest = 0
+
+      for (const path of seenPaths) {
+        newest = Math.max(newest, await $.fs.stat(path).then(stat => stat.mtimeMs, () => 0))
+      }
+
+      const isNow = newest > 0 && (await $.clock.now()) - newest < SEEN_MS
+
+      if (isNow !== isSeen) {
+        isSeen = isNow
+        $.ui.invalidate('ui.render')
+      }
+    }
+
     const refresh = async (isFirst: boolean) => {
       if (isRunning) {
         return
@@ -60,12 +96,26 @@ export const register: Register = on => {
         }
 
         const done = await $.process.run(argv, { stdin: JSON.stringify({ cwd: start, session_id: sessionId }), timeoutMs: 5000 })
-        const said = JSON.parse(done.stdout.trim() || 'null') as { state?: string; url?: string | null; up?: boolean; agent?: boolean } | null
+        const said = JSON.parse(done.stdout.trim() || 'null') as {
+          state?: string
+          url?: string | null
+          up?: boolean
+          agent?: boolean
+          seen_paths?: string[]
+          status_line_seen?: boolean
+        } | null
         const fresh: Shown | null = said?.url ? { url: said.url, up: said.up === true } : null
 
         state = typeof said?.state === 'string' ? said.state : state
         isAgent = isAgent || said?.agent === true
+        seenPaths = Array.isArray(said?.seen_paths) ? said.seen_paths.filter(path => typeof path === 'string') : []
+
+        if (seenPaths.length === 0) {
+          isSeen = said?.status_line_seen === true // no file to look at: the helper's own reading stands
+        }
+
         seen = await timesOf()
+        await looksAtMarker()
 
         if (fresh?.url !== shown?.url || fresh?.up !== shown?.up) {
           shown = fresh
@@ -86,6 +136,8 @@ export const register: Register = on => {
       }
 
       void (async () => {
+        await looksAtMarker() // a stat of one file, no process: the row hides within one poll of the link first showing in the status line
+
         const isChanged = (await timesOf()) !== seen
         const isDue = (await $.clock.now()) - lastRun > REFRESH_MS
 
@@ -101,7 +153,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (shown === null || e.props.hasSurvey) {
+    if (shown === null || e.props.hasSurvey || !isWanted()) {
       return next(e)
     }
 

@@ -8,7 +8,14 @@ project's own board, as a link. A mod runs in a sandbox without Python, and the 
 which name are Python and already written, so the mod asks this helper and draws what it prints. It prints one line of
 JSON, or nothing (any error, and a Claude Code of any version that did not ask):
 
-    {"state": "<the status-board home it read>", "url": "<the address>" | null, "up": true | false | null, "agent": true?}
+    {"state": "<the status-board home it read>", "url": "<the address>" | null, "up": true | false | null, "agent": true?,
+     "data": "<the plugin's data folder>", "seen_paths": ["<a file of its seen/ folder>", ...], "status_line_seen": true | false}
+
+`state`, `url`, `up` and `agent`, and the flags `--start` and `--no-agent-check`, are a contract with status line filters, the
+shipped one and hand-made ones: they and the command line are kept as they are. The last three are release 2.3.0's (where the link shows is a choice, made at set-up): the
+status line's filter touches `seen/<first 16 hex of sha1 of the start folder's path>` in the plugin's data folder each time it
+places the link, and `status_line_seen` says whether that file is younger than ten minutes; the row above the prompt is drawn
+when it is not (or when the owner kept it on). `seen_paths` are the files the mod looks at between two runs.
 
 `url` is null where there is nothing to show: the folder is no project, the project has no board, the board has never been
 started (no record: the front door lists it as "no address yet"), the board's name is not one the front door would send to
@@ -32,14 +39,64 @@ and exits 0.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
+import time
 import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 AGENT_KEYS = ("agent_type", "agent_id", "teammate_name", "team_name")  # as hooks/offer-bootstrap.py reads them
+SEEN_SECONDS = 600  # the link counts as shown in the status line for ten minutes after the filter last placed it
+
+
+def data_dir() -> Path:
+    """The plugin's data folder, where the status line's filter leaves `seen/<first 16 hex of sha1 of the start folder>`.
+
+    The one place its path is worked out here. A command hook is given it as CLAUDE_PLUGIN_DATA; a mod, and the process a mod
+    starts (this one), is not (spike of 15 Nov 2026, Claude Code 2.1.325, option/SPIKE.md section 5), so it is worked out from
+    where this file is: installed from a marketplace, `<plugins>/cache/<marketplace>/<name>/<version>` gives
+    `<plugins>/data/<name>-<marketplace>`; loaded by --plugin-dir, `<config>/plugins/data/<name>-inline`, the config folder
+    being CLAUDE_CONFIG_DIR or ~/.claude. Characters other than letters, digits, `_` and `-` become `-`. Only a path: nothing
+    here makes the folder.
+    """
+    given = os.environ.get("CLAUDE_PLUGIN_DATA")
+    if given:
+        return Path(given)
+    root = HERE.parent
+    market = root.parent.parent
+    if market.parent.name == "cache":
+        ident = f"{root.parent.name}-{market.name}"
+        return market.parent.parent / "data" / re.sub(r"[^A-Za-z0-9_-]", "-", ident)
+    name = root.name
+    try:
+        name = str(json.loads((root / ".claude-plugin" / "plugin.json").read_text()).get("name") or name)
+    except (OSError, ValueError):
+        pass
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    return config / "plugins" / "data" / re.sub(r"[^A-Za-z0-9_-]", "-", f"{name}-inline")
+
+
+def status_line_marker(start: Path, given: str | None) -> dict:
+    """`data`: the data folder; `seen_paths`: the files whose time says when the filter last placed the link for this start
+    folder (its path as given and as resolved: the filter may hash either); `status_line_seen`: one of them is younger than
+    ten minutes. A folder or a file that is not there says: not seen."""
+    folder = data_dir()
+    forms = {str(start)}
+    if given:
+        forms.add(str(Path(given)))
+    paths = [str(folder / "seen" / hashlib.sha1(form.encode()).hexdigest()[:16]) for form in sorted(forms)]
+    seen = False
+    for path in paths:
+        try:
+            if time.time() - os.stat(path).st_mtime < SEEN_SECONDS:
+                seen = True
+        except OSError:
+            pass
+    return {"data": str(folder), "seen_paths": paths, "status_line_seen": seen}
 
 
 def _pid_alive(rec: dict) -> bool:
@@ -71,7 +128,7 @@ def agent_session(payload: dict) -> bool:
         return False
 
 
-def link_for(start: Path, payload: dict | None = None, check_agent: bool = True) -> dict:
+def link_for(start: Path, payload: dict | None = None, check_agent: bool = True, given: str | None = None) -> dict:
     sys.dont_write_bytecode = True
     os.environ["CLAUDE_PROJECT_DIR"] = str(start)  # the folder the session was started in: answer_ledger.start_folder
     if str(HERE) not in sys.path:
@@ -80,6 +137,7 @@ def link_for(start: Path, payload: dict | None = None, check_agent: bool = True)
     import front_door
 
     out: dict = {"state": str(ledger.STATE), "url": None, "up": None}
+    out.update(status_line_marker(start, given))  # release 2.3.0: the keys above are the status line's contract, these are new
     if check_agent and agent_session(payload or {}):
         out["agent"] = True
         return out
@@ -118,7 +176,7 @@ def main() -> int:
         start = Path(start_arg)
         if not start.is_absolute() or not start.is_dir():
             return 0
-        sys.stdout.write(json.dumps(link_for(start.resolve(), payload, check_agent=not no_agent_check)) + "\n")
+        sys.stdout.write(json.dumps(link_for(start.resolve(), payload, check_agent=not no_agent_check, given=start_arg)) + "\n")
     except BaseException:  # noqa: BLE001 - never fail the session
         return 0
     return 0

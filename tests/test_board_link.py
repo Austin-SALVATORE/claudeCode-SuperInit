@@ -22,6 +22,7 @@ Exit code: 0 when every test passes, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -527,6 +528,337 @@ def test_the_readme_says_where_the_row_sits_and_what_a_narrow_terminal_does():
     assert re.search(r"at the right end of the row, beside the `\[-\]`", text), "README.md does not say the content is at the right end"
     assert "ellipsis" in text and "full address" in text, "README.md does not say what a name too long for the row does"
     assert "2.1.323" in text and "other mods" in text, "README.md does not say the row leaves other mods' rows alone"
+
+
+# ── release 2.3.0, part A (15 Nov 2026): where the link shows is a choice, made at set-up ──────────────────────────────
+MANIFEST = PLUGIN / ".claude-plugin" / "plugin.json"
+SKILL_LINK = PLUGIN / "skills" / "board-link" / "SKILL.md"
+SEEN_SECONDS = 600  # the link counts as shown in the status line for ten minutes after the filter last placed it
+
+
+def seen_name(start: Path | str) -> str:
+    return hashlib.sha1(str(start).encode()).hexdigest()[:16]
+
+
+def test_the_manifest_declares_the_two_switches_as_plain_booleans():
+    """Claude Code's `userConfig`: the enable dialog, the /config rows, `pluginConfigs` in the user's settings. Two booleans,
+    never a field with `options`: 'users on Claude Code versions before v2.1.271 can't load the plugin' that declares one
+    (plugins-reference.md, "Limit a field to fixed options"), and that would lock them out of every hook too."""
+    config = json.loads(MANIFEST.read_text()).get("userConfig")
+    assert isinstance(config, dict) and set(config) == {"board_link_row", "board_link_status_line"}, config
+    row, line = config["board_link_row"], config["board_link_status_line"]
+    assert row["type"] == "boolean" and row["title"] == "Board link above the prompt" and row["default"] is True, row
+    assert line["type"] == "boolean" and line["title"] == "Board link in the status line" and line["default"] is False, line
+    for field in (row, line):
+        assert field.get("description", "").strip(), field
+        assert "options" not in field and not field.get("required") and not field.get("sensitive"), field
+
+
+def test_helper_reports_seen_from_data_folder():
+    """The filter touches `seen/<first 16 hex of sha1 of the start folder's path>` in the plugin's data folder each time it
+    places the link; the helper says whether that file is younger than ten minutes, and where the data folder is."""
+    world = World()
+    repo = world.project("shop-app")
+    world.board("shop-app", repo)
+    data = TMP / "data-seen"
+    env = {"CLAUDE_PLUGIN_DATA": str(data)}
+    _, said = run_helper(world, repo, env_extra=env)
+    assert said and said["data"] == str(data) and said["status_line_seen"] is False, said  # no folder, no file: never seen
+    (data / "seen").mkdir(parents=True)
+    marker = data / "seen" / seen_name(repo)
+    marker.write_text("")
+    _, said = run_helper(world, repo, env_extra=env)
+    assert said["status_line_seen"] is True and said["url"] == address("shop-app") and said["up"] is True, said
+    assert str(marker) in said["seen_paths"], said
+    old = time.time() - SEEN_SECONDS - 30
+    os.utime(marker, (old, old))
+    _, said = run_helper(world, repo, env_extra=env)
+    assert said["status_line_seen"] is False, said
+    other = data / "seen" / seen_name(repo / "elsewhere")  # another project's marker says nothing about this one
+    other.write_text("")
+    _, said = run_helper(world, repo, env_extra=env)
+    assert said["status_line_seen"] is False, said
+
+
+def test_helper_counts_the_marker_of_the_path_as_given_and_of_the_resolved_one():
+    """A start folder reached through a link (`/tmp` is `/private/tmp` on a Mac): the filter may hash either form of the
+    path, the helper looks at both."""
+    world = World()
+    repo = world.project("shop-app")
+    world.board("shop-app", repo)
+    link = world.root / "linked-shop-app"
+    link.symlink_to(repo, target_is_directory=True)
+    data = TMP / "data-links"
+    (data / "seen").mkdir(parents=True)
+    env = {"CLAUDE_PLUGIN_DATA": str(data)}
+    (data / "seen" / seen_name(link)).write_text("")
+    _, said = run_helper(world, link, env_extra=env)
+    assert said and said["status_line_seen"] is True, said
+    (data / "seen" / seen_name(link)).unlink()
+    (data / "seen" / seen_name(repo.resolve())).write_text("")
+    _, said = run_helper(world, link, env_extra=env)
+    assert said and said["status_line_seen"] is True, said
+
+
+def test_helper_works_out_the_data_folder_from_its_own_path_when_the_mod_cannot_tell_it():
+    """A mod and the process it starts are not given CLAUDE_PLUGIN_DATA (spike of 15 Nov, SPIKE.md section 5); a command hook is.
+    Installed: <plugins>/cache/<marketplace>/<name>/<version> gives <plugins>/data/<name>-<marketplace>. Loaded by
+    --plugin-dir: <config>/plugins/data/<name>-inline, the config folder being CLAUDE_CONFIG_DIR or ~/.claude."""
+    world = World()
+    repo = world.project("shop-app")
+    world.board("shop-app", repo)
+    plugins = TMP / "cfg-installed" / "plugins"
+    root = plugins / "cache" / "somemarket" / "project-init" / "9.9.9"
+    for part in ("status-board", "hooks", ".claude-plugin"):
+        shutil.copytree(PLUGIN / part, root / part, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    done = subprocess.run([sys.executable, "-B", str(root / "status-board" / "board_link.py"), "--start", str(repo)], input="{}",
+                          env=world.env(), capture_output=True, text=True, timeout=20, cwd=str(TMP))
+    said = json.loads(done.stdout.strip())
+    assert said["data"] == str(plugins / "data" / "project-init-somemarket"), said
+    config = TMP / "cfg-inline"
+    done = subprocess.run([sys.executable, "-B", str(HELPER), "--start", str(repo)], input="{}",
+                          env=world.env(CLAUDE_CONFIG_DIR=str(config)), capture_output=True, text=True, timeout=20, cwd=str(TMP))
+    said = json.loads(done.stdout.strip())
+    assert said["data"] == str(config / "plugins" / "data" / "project-init-inline"), said
+    done = subprocess.run([sys.executable, "-B", str(HELPER), "--start", str(repo)], input="{}",
+                          env=world.env(), capture_output=True, text=True, timeout=20, cwd=str(TMP))
+    said = json.loads(done.stdout.strip())
+    assert said["data"] == str(FAKE_HOME / ".claude" / "plugins" / "data" / "project-init-inline"), said
+    assert not (FAKE_HOME / ".claude" / "plugins" / "data").exists(), "the helper made the data folder: it only reads"
+
+
+def test_helper_keeps_the_keys_the_status_line_calls_and_its_command_line():
+    """Status line filters, the shipped one and hand-made ones (a script named hud-board-link.py that some set-ups pipe their status
+    line through), run `board_link.py --start <dir> --no-agent-check` and read `url` and `up` from the one line of JSON: a contract.
+    New keys are added; none is renamed or dropped."""
+    world = World()
+    repo = world.project("shop-app")
+    world.board("shop-app", repo)
+    done = subprocess.run([sys.executable, "-B", str(HELPER), "--start", str(repo), "--no-agent-check"], stdin=subprocess.DEVNULL,
+                          env=world.env(), capture_output=True, text=True, timeout=20, cwd=str(TMP))
+    said = json.loads(done.stdout.strip())
+    assert said["url"] == address("shop-app") and said["up"] is True and said["state"] == str(world.state), said
+    assert done.stdout.count("\n") == 1, "one line of JSON"
+
+
+def test_the_mod_reads_the_two_switches_once_and_applies_the_rule_in_one_place():
+    text = MOD.read_text()
+    assert re.search(r"register: Register = \(\s*on\s*,\s*options\s*\)", text), "register must take the options"
+    assert "board_link_row" in text and "board_link_status_line" in text, "the mod does not read the two switches"
+    assert re.search(r"SEEN_MS\s*=\s*600_000", text), "the status line counts as showing the link for ten minutes"
+    rule = re.search(r"const isWanted = \(\)[^\n]*=>[^\n]*", text)
+    assert rule, "the rule that decides whether the row is drawn is not one named function"
+    body = text[text.index("const isWanted"):]
+    body = body[: body.index("\n\n")] if "\n\n" in body else body
+    assert "wantsRow" in body and "wantsStatusLine" in body and "isSeen" in body, body
+    assert re.search(r"if \(shown === null \|\| e\.props\.hasSurvey \|\| !isWanted\(\)\)", text), "ui.render must stop at the rule"
+
+
+def test_the_mod_learns_a_change_of_the_switches_from_the_engines_reload_not_from_its_own_hook_or_poll():
+    """Spike of 15 Nov (SPIKE.md): the engine reloads the mod, `register(on, options)` runs again, whenever the plugin's options
+    change, from /config or in the settings file. A `config.set` hook or a re-read of `pluginConfigs` would add nothing."""
+    text = MOD.read_text()
+    assert "'config.set'" not in text and "$.settings" not in text, "the mod listens for what the reload already tells it"
+
+
+def test_the_mod_looks_for_the_status_line_marker_without_starting_a_process():
+    text = MOD.read_text()
+    assert "seen_paths" in text and "status_line_seen" in text, "the mod does not read what the helper says about the marker"
+    assert text.count("$.process.run") == 1, "one place starts the helper"
+    assert "$.fs.stat" in text and "mtimeMs" in text
+
+
+def test_claude_plugin_test_runs_the_mods_own_cases():
+    """The rule of the row, run by Claude Code's own kit (`claude plugin test`): the mod is loaded with given `options`, the
+    helper's answer and the marker's time are answered below it, the clock is moved by the test."""
+    claude = shutil.which("claude")
+    if not claude:
+        raise Skip("claude is not on PATH")
+    cases = PLUGIN / "tests" / "board-link.test.tsx"
+    assert cases.is_file(), "tests/board-link.test.tsx does not exist"
+    done = subprocess.run([claude, "plugin", "test", str(PLUGIN)], capture_output=True, text=True, timeout=180,
+                          env={"HOME": str(FAKE_HOME), "PATH": os.environ.get("PATH", "")}, cwd=str(TMP))
+    out = done.stdout + done.stderr
+    assert done.returncode == 0 and re.search(r"\b0 fail\b", out), out[-1500:]
+    passed = re.search(r"(\d+) pass\b", out)
+    assert passed and int(passed.group(1)) >= 8, out[-800:]
+
+
+def test_the_readme_names_the_two_switches_and_says_nothing_depends_on_claude_hud():
+    text = " ".join((PLUGIN / "README.md").read_text().split())
+    for word in ("Board link above the prompt", "Board link in the status line", "/config", "/project-init:board-link", "claude-hud"):
+        assert word in text, f"README.md does not say {word}"
+    assert re.search(r"works without claude-hud|no dependency on claude-hud|does not need claude-hud", text), \
+        "README.md does not say the plugin works without claude-hud"
+    assert re.search(r"statusline_setup\.py\"? remove|Take the link out of the status line", text), "README.md does not say how the wrapper is taken out"
+    assert "within ten minutes" in text or "within 10 minutes" in text, "README.md does not say the row comes back by itself"
+    assert not re.search(r"/Users/|/home/|/opt/homebrew", text)
+
+
+def test_the_board_link_skill_asks_one_question_with_three_answers():
+    text = SKILL_LINK.read_text()
+    head = text.split("---", 2)[1]
+    assert re.search(r"^name:\s*board-link\s*$", head, re.M) and re.search(r"^description:", head, re.M), head
+    assert "Where should the board's link show?" in text and "Board link" in text
+    for answer in ("Above the prompt", "In the status line", "Both"):
+        assert answer in text, f"the skill does not offer {answer}"
+    assert "AskUserQuestion" in text
+
+
+def test_the_skill_names_claude_huds_commands_verbatim_and_never_installs_it():
+    text = SKILL_LINK.read_text()
+    for command in ("/plugin marketplace add jarrodwatts/claude-hud", "/plugin install claude-hud", "/reload-plugins", "/hud"):
+        assert command in text, f"the skill does not give {command}"
+    assert re.search(r"type these (?:commands )?yourself", text), "the skill must say the owner types them"
+    assert re.search(r"does not (?:install|run)[^.]*claude-hud|never (?:install|run)[^.]*claude-hud", text, re.I), \
+        "the skill must say it does not install another author's plugin"
+    for words in ("Not now", "Don't suggest claude-hud again"):
+        assert words in text, words
+
+
+def test_the_skill_never_runs_add_without_a_yes_step():
+    """`statusline_setup.py add` is the one thing that edits a user's settings.json: it appears, as something to run, only
+    after the step in which the owner has been shown the old and the new command and has said yes."""
+    text = SKILL_LINK.read_text()
+    marker = "## After the owner's yes"
+    assert marker in text, "the skill has no step named after the owner's yes"
+    # `add --dry-run` writes nothing and is how the owner is shown the old and the new command (and learns of a refusal) before
+    # the owner is asked; any other `add` is the edit itself
+    commands = [m.start() for m in re.finditer(r"statusline_setup\.py[\"']?\s+add\b(?![^\n`]*--dry-run)", text)]
+    assert commands, "the skill never says how the edit is made"
+    assert all(pos > text.index(marker) for pos in commands), "`add` is mentioned before the owner's yes"
+    assert re.search(r"statusline_setup\.py[\"']?\s+add\b[^\n`]*--dry-run", before_of(text, marker)), "the owner is not shown the commands by a dry run"
+    before = text[: text.index(marker)]
+    assert re.search(r"show[^.]*(?:old|current)[^.]*new command|old and the new command", before, re.I), \
+        "the skill must show the owner the old and the new command before asking"
+    assert re.search(r"(?i)never[^.]*\badd\b[^.]*without|do not run[^.]*\badd\b[^.]*before", text), "the rule is not said in words"
+
+
+def before_of(text: str, marker: str) -> str:
+    return text[: text.index(marker)]
+
+
+def test_the_skill_sets_the_switches_with_claude_plugin_configure_and_never_edits_settings_itself():
+    text = SKILL_LINK.read_text()
+    assert "claude plugin configure project-init@claudecode-superinit --values-stdin" in text
+    assert '"board_link_row"' in text and '"board_link_status_line"' in text
+    assert re.search(r"(?i)never (?:edit|write)[^.\n]*settings", text), "the skill must say that it does not edit the settings file itself"
+    assert "hud install" in text and re.search(r"(?i)never[^.\n]*hud install", text)
+
+
+def test_the_skill_calls_the_setup_script_only_as_the_interface_fixes_it():
+    """option/INTERFACE.md: `status`; `add [--replace-hand-made] [--dry-run]`; `remove [--dry-run]`; `record --answer
+    row|status-line|both|declined [--hud proposed|declined]`. One line of JSON each; exit 0 done, 2 refused, 1 unexpected."""
+    text = SKILL_LINK.read_text()
+    calls = re.findall(r"statusline_setup\.py[\"']?\s+([a-z-]+)([^\n`]*)", text)
+    assert calls, "the skill never calls the set-up script"
+    allowed = {"status": set(), "add": {"--replace-hand-made", "--dry-run"}, "remove": {"--dry-run"}, "record": {"--answer", "--hud"}}
+    for command, rest in calls:
+        assert command in allowed, f"the skill calls a command the script does not have: {command}"
+        flags = set(re.findall(r"--[a-z-]+", rest))
+        assert flags <= allowed[command], (command, flags - allowed[command])
+    answers = set(re.findall(r"--answer\s+([a-z-]+)", text))
+    assert answers and answers <= {"row", "status-line", "both", "declined"}, answers
+    assert set(re.findall(r"--hud\s+([a-z-]+)", text)) <= {"proposed", "declined"}
+    for command in ("status", "add", "remove", "record"):
+        assert any(c == command for c, _ in calls), f"the skill never uses {command}"
+    assert re.search(r"exit (?:code )?2", text) and "refused" in text, "the skill must say what exit 2 and `refused` mean"
+
+
+def test_the_skill_says_the_edit_can_be_refused_and_what_then():
+    text = " ".join(SKILL_LINK.read_text().split())
+    assert "refus" in text and "row above the prompt stays" in text
+    assert "--replace-hand-made" in text and "Take the link out of the status line" in text
+
+
+def test_the_skill_records_the_answer_and_is_asked_at_most_once():
+    text = " ".join(SKILL_LINK.read_text().split())
+    assert "statusline_setup.py" in text and re.search(r"\brecord\b", text)
+    assert re.search(r"at most once|asked once|once per user", text)
+
+
+def test_the_skill_shows_old_and_new_command_before_replacing_a_hand_made_filter_and_before_any_refusal_stop():
+    """The independent check of 2.3.0, finding 1: for a status line that already pipes through a hand-made board filter from before 2.3.0,
+    `add --dry-run` answers `refused` (code `hand-made`) and the steps collided: the refusal bullet said stop, and the
+    replacement was run on a yes to a description. The hand-made case comes first: `add --replace-hand-made --dry-run`, the old
+    and the new command shown, "Make this edit?", and only after the yes `add --replace-hand-made`."""
+    text = SKILL_LINK.read_text()
+    marker = "## After the owner's yes"
+    before = text[: text.index(marker)]
+    after = text[text.index(marker):]
+    dry = before.find("--replace-hand-made --dry-run")
+    assert dry >= 0, "the skill never runs `add --replace-hand-made --dry-run` before the yes"
+    assert re.search(r"hand_made_filter[^\n]*true|`hand_made_filter`", before), "the hand-made case is not named"
+    refusal = before.index("If a dry run says `refused`")
+    assert dry < refusal, "the hand-made case must come before the bullet that stops on a refusal"
+    case = before[dry - 400: dry + 900]
+    assert re.search(r"old and the new command|old and new", case) and "code block" in case and "Make this edit?" in case, case
+    assert re.search(r"hand-made", before[refusal: refusal + 700]), "the refusal bullet must say that the hand-made refusal is handled apart"
+    # every mention of replacing before the yes is the dry run: the edit itself is only after it
+    assert not re.search(r"--replace-hand-made(?![^\n`]*--dry-run)", before), "`--replace-hand-made` without the dry run before the yes"
+    assert re.search(r"add\b[^\n]*--replace-hand-made", after) or "--replace-hand-made" in after, "the edit with --replace-hand-made is not after the yes"
+
+
+def test_the_permission_prompt_is_not_claimed_in_every_permission_mode():
+    """The independent check, finding 2: in the bypass and auto permission modes Claude Code's prompt does not ask. The README and
+    the skill say 'where your permission settings ask' (the skill: the owner's), or nothing."""
+    readme = " ".join((PLUGIN / "README.md").read_text().split())
+    skill = " ".join(SKILL_LINK.read_text().split())
+    for label, text in (("README.md", readme), ("the skill", skill)):
+        for m in re.finditer(r"permission prompt", text):
+            clause = text[max(0, m.start() - 90): m.end() + 40]
+            assert re.search(r"where (?:your|the owner's) permission settings ask", clause, re.I), \
+                f"{label} claims the prompt without a condition: {clause}"
+    assert "permission prompt" in readme or "permission prompt" in skill
+
+
+def test_the_readme_says_remove_puts_the_command_back_and_the_row_comes_back_by_the_ten_minute_rule():
+    """The independent check, finding 2: the script never touches the switches. By hand, `remove` gives the old command back;
+    the row comes back within ten minutes, or the owner turns it on in /config (the skill's own remove step turns it on)."""
+    text = " ".join((PLUGIN / "README.md").read_text().split())
+    assert "turns the row back on" not in text, "README.md says the script turns the row on"
+    assert re.search(r"puts your old command back exactly; the row comes back within ten minutes \(or turn it on in `/config`\)", text), \
+        "README.md does not say that the row comes back within ten minutes, or by /config"
+
+
+def test_no_gendered_pronoun_in_the_skill_the_readme_sections_on_the_link_and_the_files_that_describe_them():
+    """The plugin is public and its skills run for any owner: 'the owner', 'they', 'their', or a sentence that needs no pronoun.
+    Asked for by the independent check twice on 15 Nov (a template, a skill sentence), and again for this skill."""
+    word = re.compile(r"\b(?:he|his|him|himself|she|her|hers|herself)\b", re.I)
+    readme = (PLUGIN / "README.md").read_text()
+    sections = readme[readme.index("### The board's link is in the session"): readme.index("### Under Orca")]
+    texts = {
+        "skills/board-link/SKILL.md": SKILL_LINK.read_text(),
+        "README.md, the sections on the link": sections,
+        ".claude-plugin/plugin.json": MANIFEST.read_text(),
+        "hooks/board-link.tsx": MOD.read_text(),
+        "status-board/board_link.py": HELPER.read_text(),
+        "tests/board-link.test.tsx": (PLUGIN / "tests" / "board-link.test.tsx").read_text(),
+    }
+    for label, text in texts.items():
+        found = [m.group(0) for m in word.finditer(text)]
+        assert not found, f"{label} has a gendered pronoun: {found[:6]}"
+
+
+def test_no_machine_path_in_shipped_files():
+    for path in (SKILL_LINK, MOD, HELPER, MANIFEST, PLUGIN / "README.md", PLUGIN / "skills" / "project-bootstrap" / "SKILL.md"):
+        text = path.read_text()
+        assert not re.search(r"/opt/homebrew|/Users/[A-Za-z]|/home/[A-Za-z]", text), f"{path.name} names a machine path"
+
+
+def test_the_bootstrap_skill_asks_where_the_boards_link_shows_when_never_asked():
+    text = (PLUGIN / "skills" / "project-bootstrap" / "SKILL.md").read_text()
+    section = text[text.index("## Ask the owner first"): text.index("## Copy from `templates/`")]
+    assert "where the board's link shows" in section and "/project-init:board-link" in section, section
+    assert re.search(r"never (?:been )?asked", section), "the question is asked only of an owner who was never asked"
+    assert section.count("/project-init:board-link") == 1, "one question, not a second flow"
+
+
+def test_the_status_board_skill_says_where_the_switches_are_in_one_sentence():
+    text = (PLUGIN / "skills" / "status-board" / "SKILL.md").read_text()
+    sentence = ("Where the board's link shows (above the prompt, in the status line, or both) is the owner's choice: the plugin's two "
+                "switches, `/project-init:board-link`; you do not change them yourself.")
+    assert text.count(sentence) == 1, f"the sentence is there {text.count(sentence)} times"
 
 
 def test_claude_validates_the_plugin_with_the_mod():
