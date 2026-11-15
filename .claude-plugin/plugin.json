@@ -1,6 +1,6 @@
 {
   "name": "project-init",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "Scaffold how a project is run under Orca and oh-my-claudecode (the operating model, the worker roster, the workstream register, the worker brief) and report to the owner on a live status board.",
   "author": {
     "name": "Austin Salvatore"
@@ -15,5 +15,19 @@
     "status-board",
     "verification"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "userConfig": {
+    "board_link_row": {
+      "type": "boolean",
+      "title": "Board link above the prompt",
+      "description": "Show the status board's short address as a row above the prompt, in a session of a project that has a board. Needs Claude Code 2.1.287 or later. On unless you turn it off.",
+      "default": true
+    },
+    "board_link_status_line": {
+      "type": "boolean",
+      "title": "Board link in the status line",
+      "description": "Show the board's address in your status line. Off until you set it up with /project-init:board-link, which edits nothing without your yes. The row above the prompt comes back by itself if the status line stops showing the link.",
+      "default": false
+    }
+  }
 }
