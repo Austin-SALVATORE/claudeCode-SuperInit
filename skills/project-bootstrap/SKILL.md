@@ -37,7 +37,11 @@ recommendation (see the `status-board` skill):
 - whether the default roster in `operating-model.md` suits them (a tier
   per role; they may change a row);
 - what releasing means here: it fills the comment at the top of
-  `release-choreography.md`.
+  `release-choreography.md`;
+- where the board's link shows (above the prompt, in the status line, or
+  both), but only of an owner who was never asked: run the
+  `/project-init:board-link` skill's one question, and carry on whatever the
+  answer (the row above the prompt stays by default).
 
 **No file is written before the owner answers.** Scaffolding a rule nobody
 follows is worse than no rule.

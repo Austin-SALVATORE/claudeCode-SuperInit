@@ -81,6 +81,20 @@ flag and no agent_type, started in a checkout that is often a fresh worktree
 with no `.claude/` at all. It got the offer, ahead of the task it was
 dispatched for. `orca_session.py` recognises it from Orca's own record.
 
+A second, independent block (2.3.0, `board_link_block`) follows the first and says two things about where the board's link
+shows (the plan: statusline/OPTION-PLAN.md sections 2 and 3), each once, to the owner's own interactive session only: not a
+worker, a teammate or `claude -p` (the same gates), at `startup` only, in a project that has a board, inside or outside Orca
+alike, and never under PROJECT_INIT_NO_OFFER=1:
+  * `<board-link-offer>`, once per user: that `/project-init:board-link` lets the owner choose where the link shows. Said when
+    the owner has not answered (no `board-link.json` in the plugin's data folder) and the marker `board-link.offered` could
+    be created with O_CREAT|O_EXCL, which is done before anything is printed, so that two sessions starting together say it
+    once. A session that is not the owner's never creates the marker, so it does not use up the once.
+  * `<board-link-statusline>`, once per change of the command: the link was added to the status line (`statusline-before.json`,
+    which `statusline_setup.py add` writes and `remove` takes away), the status-line switch is on, and the command no longer
+    carries the wrapper (claude-hud's own set-up rewrote it). The marker is `board-link.rewrite-<digest of the command>`.
+The plugin's data folder is CLAUDE_PLUGIN_DATA, which a command hook is given (SPIKE.md): without it nothing is said. The two
+markers are all this block writes, in that folder and nowhere else. An error in either block never costs the other.
+
 Fails quiet. Any error, unreadable input or unexpected state prints nothing and
 exits 0 — the cost of a bug here is the status quo, no offer. A hook that
 blocks the session it is greeting is worse than the gap it fills. It writes
@@ -91,6 +105,7 @@ orca_session.py: `ps` for the teammate walk (2 s at most) and Orca's own listing
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -260,27 +275,25 @@ def orca_worker(payload: dict) -> bool:
         return False
 
 
-def main() -> int:
-    payload = read_payload()
-    if unattended():  # first: there is nobody to ask, whatever else is true
-        return 0
+def bootstrap_block(payload: dict, is_agent) -> None:
+    """The bootstrap offer and the update note (2.2.0): the first block of this hook."""
     if payload.get("source") not in OFFER_ON or opted_out_by_env():
-        return 0
+        return
     raw = payload.get("cwd")
     if not isinstance(raw, str) or not raw:
-        return 0
+        return
     cwd, home = Path(raw).resolve(), Path.home().resolve()
     if not cwd.is_dir() or excluded_location(cwd, home):
-        return 0
+        return
     if not inside_orca():
-        return 0
+        return
     root, roots = project_roots(cwd, home)
     if root is None or any((r / OPT_OUT_FILE).exists() for r in roots):
-        return 0
+        return
     if any((r / OPERATING_MODEL).is_file() for r in roots):
-        return 0
-    if agent_session(payload):  # last: it costs a `ps`
-        return 0
+        return
+    if is_agent():  # last: it costs a `ps`
+        return
 
     if any((r / OLD_TEAM_ROLES).is_file() for r in roots):
         print("<bootstrap-update>")
@@ -298,7 +311,7 @@ def main() -> int:
             "project, or PROJECT_INIT_NO_OFFER=1."
         )
         print("</bootstrap-update>")
-        return 0
+        return
 
     print("<bootstrap-offer>")
     print(
@@ -317,6 +330,113 @@ def main() -> int:
         "everywhere."
     )
     print("</bootstrap-offer>")
+
+
+# ── the second block (2.3.0): where the board's link shows, said once ───────────────────────────────────────────────
+# Independent of the first: its own conditions, its own opt-out, and an error in one never costs the other. It writes
+# in the plugin's data folder (CLAUDE_PLUGIN_DATA, which a command hook is given) and nowhere else: two files that
+# claim "said once" with O_CREAT|O_EXCL, so that two sessions starting together say it once.
+BOARD_LINK_OFFERED = "board-link.offered"  # the offer was made (by whichever session got here first)
+BOARD_LINK_BEFORE = "statusline-before.json"  # `statusline_setup.py add` wrote it: this status line was wired once
+BOARD_LINK_RECORD = "board-link.json"  # `statusline_setup.py record` wrote it: the owner answered
+
+
+def board_link_sibling(name: str):
+    """A module of status-board/, imported from beside this hook's plugin folder; any failure raises (the caller is quiet)."""
+    sys.dont_write_bytecode = True  # never write into the plugin directory
+    folder = str(Path(__file__).resolve().parent.parent / "status-board")
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    return __import__(name)
+
+
+def board_link_project_has_board(cwd: Path) -> bool:
+    """The board of the session's project exists: answer_ledger's own rule (the folder the session started in, repo.json)."""
+    board, _folder, _refused = board_link_sibling("answer_ledger").find_board(cwd)
+    return board is not None and (board / "narrative.json").is_file()
+
+
+def board_link_claim(path: Path) -> bool:
+    """True for the one session that creates this marker: O_CREAT|O_EXCL, before anything is printed."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
+    return True
+
+
+def board_link_lost_for(data: Path) -> str | None:
+    """A short digest of the status line command when it no longer carries the link although it was wired and the switch
+    is on, else None. (`add` leaves statusline-before.json; `remove` takes it away; the switch is the owner's.)"""
+    if not (data / BOARD_LINK_BEFORE).is_file():
+        return None
+    setup = board_link_sibling("statusline_setup")
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    doc = setup.read_settings(config)
+    if not setup.option_on(doc, setup.OPTION_STATUS_LINE, False):
+        return None
+    command = setup.status_line_command(doc)
+    if command is not None and setup.MARKER in command:
+        return None
+    return hashlib.sha1((command or "").encode()).hexdigest()[:16]
+
+
+def board_link_block(payload: dict, is_agent) -> None:
+    if payload.get("source") != "startup" or opted_out_by_env():
+        return
+    data_env = os.environ.get("CLAUDE_PLUGIN_DATA")
+    raw = payload.get("cwd")
+    if not data_env or not isinstance(raw, str) or not raw:
+        return  # nowhere to keep "said once": say nothing (a Claude Code that does not give the folder)
+    cwd, data = Path(raw).resolve(), Path(data_env)
+    if not cwd.is_dir() or not board_link_project_has_board(cwd):
+        return
+    asked = (data / BOARD_LINK_RECORD).is_file()
+    offer = not asked and not (data / BOARD_LINK_OFFERED).exists()
+    try:
+        digest = board_link_lost_for(data)
+    except Exception:  # a settings.json that cannot be read says nothing about the link, and must not cost the offer
+        digest = None
+    if not offer and digest is None:
+        return
+    if is_agent():  # the owner's own session only: a worker, a teammate, claude -p never hear it, nor use up the once
+        return
+    if offer and board_link_claim(data / BOARD_LINK_OFFERED):
+        print("<board-link-offer>")
+        print(
+            "Once, and only now: the owner can choose where this plugin shows the board's link, above the "
+            "prompt (as now), in the status line, or both. Offer /project-init:board-link in one sentence. "
+            "If they decline or do not answer, carry on and do not raise it again: the row above the prompt stays."
+        )
+        print("</board-link-offer>")
+    if digest is not None and board_link_claim(data / f"board-link.rewrite-{digest}"):  # once per change of the command
+        print("<board-link-statusline>")
+        print(
+            "The status line no longer carries the board's link (its command was rewritten, for example by "
+            "claude-hud's own set-up). The row above the prompt shows the link again: at once when the row option is on, and, if the "
+            "owner had turned the row off, once the status line's last showing of the link is ten minutes old. Tell the owner in one "
+            "sentence; /project-init:board-link puts it back in the status line."
+        )
+        print("</board-link-statusline>")
+
+
+def main() -> int:
+    payload = read_payload()
+    if unattended():  # first: there is nobody to ask, whatever else is true
+        return 0
+    answer: list[bool] = []
+
+    def is_agent() -> bool:  # asked at most once for both blocks: it costs a `ps` and Orca's listing
+        if not answer:
+            answer.append(agent_session(payload))
+        return answer[0]
+
+    for block in (bootstrap_block, board_link_block):  # independent: an error in one is not the other's
+        try:
+            block(payload, is_agent)
+        except Exception:
+            pass
     return 0
 
 

@@ -217,6 +217,8 @@ every check on the board is unchanged. If the banner says the address by
 name is not available, give the port address and the reason in one line.
 The board's short address is also shown in a row above the prompt (Claude Code 2.1.287 or later), which you cannot see. Give the address once, when you start or first mention the board, and don't repeat it in later replies unless the owner asks.
 
+Where the board's link shows (above the prompt, in the status line, or both) is the owner's choice: the plugin's two switches, `/project-init:board-link`; you do not change them yourself.
+
 **Backgrounded, the URL it prints will not reach you — so derive the port
 from the server's own PID, never by process name:**
 
