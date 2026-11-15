@@ -119,11 +119,26 @@ was a dead URL. `hooks/revive-board.py` checks at session start whether the
 project has a board (`boards/<slug>/narrative.json`) and whether anything
 answers on its port:
 
-- the board page answers: nothing happens;
 - nothing is listening: `serve.py` is started, detached, and one line
   prints the URL;
-- something else is listening: nothing is started, and one line says the
-  port is taken.
+- something answers: the hook asks it for its proof (`GET /_proof`, which only
+  the holder of `servers/board.key` can answer, the same request the button's
+  opener makes). A board that proves itself: nothing happens. A server that
+  cannot prove itself (a board of an older release, one with no usable key,
+  one that holds an older key, one that does not answer) is stopped with one
+  SIGTERM and the board is started again, one line saying so, but only when
+  the process is this project's own recorded server: its record
+  `servers/<port>.json` is a regular file of yours naming this project and a
+  loopback board, its pid is alive and yours, it is the process that listens
+  on the port, and its command line is `python .../status-board/serve.py
+  --repo <this project>`. All five are measured, and measured again right
+  before the signal. Anything else that holds the port (another program,
+  another project's server, another account's process, a board in phone mode)
+  gets one line that says so and is never stopped, and so does anything that
+  cannot be confirmed; a server that ignores SIGTERM is reported, never killed
+  by force; a board is restarted at most once in ten minutes. A key that
+  others can read is reported too (no proof can be checked, and a restart
+  cannot help).
 
 The slug and port are `serve.py`'s own. The hook imports `slug_for` and
 `port_for` rather than copying them, so the two cannot drift. The server
@@ -134,31 +149,31 @@ file keeps two sessions that start together from launching two servers.
 
 What a revived board does not keep: `serve.py` stores no display name, so
 it comes back under the folder name; and it comes back on loopback only, so
-a board you had exposed with `--host` needs `--host` again. Nor can the
-hook tell a different project's board on the same derived port (there are
-120 ports) from this one; it leaves that alone.
+a board you had exposed with `--host` needs `--host` again (the hook never
+restarts one). Another project's board on the same derived port (there are
+120 ports) holds the same key and proves itself, so it is left alone.
 
 ### The board's link is in the session
 
-In a session of a project that has a board, a row above the prompt shows the
-board's short address, `http://localhost:8800/<name>`, as a link
-(`hooks/board-link.tsx`, with `status-board/board_link.py`), at the right end
-of the row, beside the `[-]` that Claude Code draws there. The row follows the
-width of the terminal, and a name too long for it is cut with an ellipsis and
-stays one row; the link keeps the full address. The row is the plugin's own:
+In a session of a project that has a board, a row above the prompt shows one
+button, `9: board localhost:8800/<name>` (`hooks/board-link.tsx`, with
+`status-board/board_link.py`), at the right end of the row, beside the `[-]`
+that Claude Code draws there; it opens the board in your browser (see below),
+and says `(not running)` when the board's server is down. It is a button and
+not a link, so that nothing prints an address. The row follows the width of
+the terminal, and a name too long for it is cut with an ellipsis and stays
+one row. The row is the plugin's own:
 it leaves other mods' rows alone, including on Claude Code before 2.1.323,
 where all mods shared one drawing in the band. It is a mod,
 which needs Claude Code 2.1.287 or later; an older one ignores the file and
-every hook above still works. The link is a real OSC 8 hyperlink where the
-terminal supports them (iTerm2, Ghostty, WezTerm, kitty: command-click or
-ctrl-click), and the plain address elsewhere; a row you do not want can be
-folded away with ctrl+x ctrl+a. After the address, `(not running)` says that
-the board's server is not alive: it comes within five minutes of the server
-stopping (a server that dies changes no file, so the row finds out at its next
-five-minute look), and a process id that another program has taken since keeps
-the address without the mark. The link goes to the front door in any case,
-and the door says what is there. If another program holds port 8800, the link
-leads there; the board's port address, from its start line, still works.
+every hook above still works. A row you do not want can be folded away with
+ctrl+x ctrl+a. After the address, `(not running)` says that the board's server
+is not alive: it comes within five minutes of the server stopping (a server
+that dies changes no file, so the row finds out at its next five-minute look),
+and a process id that another program has taken since keeps the address
+without the mark. The button does not go through the front door: it opens the
+board itself, and the opener says so when the server on the board's port does
+not prove it is this project's board.
 
 The project, the board and the name are found as the rest of the plugin finds
 them: the board from the folder the session was started in
@@ -177,26 +192,34 @@ the start, when a folder has changed, and every five minutes otherwise (about
 thirteen runs of 70 ms an hour). Opening the link records nothing: only a tap
 on the board does.
 
-### Where the board's link shows: the row, the status line, or both
+### The button above the prompt, and the link in the status line
 
-Two switches of the plugin's own say where. They are Claude Code's plugin
-options: shown when the plugin is installed (a dialog), kept per user in your
-settings, unchanged by updates, and changeable at any time in `/config`
+Two switches of the plugin's own say what is shown. They are Claude Code's
+plugin options: shown when the plugin is installed (a dialog), kept per user in
+your settings, unchanged by updates, and changeable at any time in `/config`
 (search for "board link"); a change takes effect at once, without a restart.
 
 | Switch | Default |
 |---|---|
-| **Board link above the prompt** | on: the row above, as described above |
-| **Board link in the status line** | off: nothing is put in your status line until you ask |
+| **Board link above the prompt** | on: the button above the prompt, as described above |
+| **Board link in the status line** | off: nothing is put in your status line until you ask; when it is on, the link is an addition beside the button |
 
-Nothing here needs anything else: with the defaults the row is shown and the
+The button above the prompt is shown whenever either switch is on: the status
+line's link is an addition beside it and never replaces it (that link only
+reaches a page that asks you to press the button, which is how a board is
+opened). That link is a real OSC 8 hyperlink where the terminal supports them
+(iTerm2, Ghostty, WezTerm, kitty: command-click or ctrl-click), and plain text
+`board` elsewhere. Only both switches off hides the button, and that is your choice too:
+nothing is shown.
+
+Nothing here needs anything else: with the defaults the button is shown and the
 plugin works without claude-hud, as it did before; claude-hud is optional and
 the plugin has no dependency on it. Someone who updates from an older release
 is not asked anything and gets the defaults.
 
-To have the link in the status line, run `/project-init:board-link`. It asks
-once where the link should show (above the prompt, in the status line, or
-both) and, for the status line:
+To have the link in the status line as well, run `/project-init:board-link`. It
+asks once whether the link should also be in the status line and, for the
+status line:
 
 - if you use claude-hud (another author's status line plugin, which shows the
   model, the context bar and git), it adds a small filter after your status
@@ -206,24 +229,22 @@ both) and, for the status line:
   prompt asks again;
 - if you do not have claude-hud, it only names claude-hud's own commands for you
   to type (it never installs another author's plugin, and never sets your
-  status line for you); until your status line shows the link, the row stays;
+  status line for you); the button above the prompt stays;
 - if you have a status line of your own, the same filter can be added after it;
   any failure of the filter prints your status line exactly as it came.
 
-The row is never lost. The filter marks each time it places the link, and the
-row, if you turned it off for the status line, comes back by itself within ten
-minutes of the status line no longer showing it: claude-hud's set-up rewrote
-the command, claude-hud was removed, Python is missing, or the plugin is gone.
-Both switches off is your choice too: nothing is shown. The question is raised
-at most once per user: by `/project-bootstrap`, or by one line in the first
-interactive session in a project with a board, never in a worker, a teammate or
-`claude -p`.
+The button is never lost to the status line: it is there whether or not the
+status line shows the link (claude-hud's set-up may rewrite the command, claude-hud
+may be removed, Python may be missing, or the plugin may be gone: the button
+does not depend on any of it). The skill never switches the button off. The
+question is raised at most once per user: by `/project-bootstrap`, or by one
+line in the first interactive session in a project with a board, never in a
+worker, a teammate or `claude -p`.
 
 To take the link out of the status line, choose "Take the link out of the status
 line" in `/project-init:board-link`, or run `python3
 status-board/statusline_setup.py remove` from the plugin: it puts your old
-command back exactly; the row comes back within ten minutes (or turn it on in
-`/config`). If the plugin was removed
+command back exactly; the button above the prompt was never taken away. If the plugin was removed
 first, the filter in your status line command is harmless (it prints your
 status line unchanged): your old command is the part inside `out=$( … )`, and
 you can put it back by editing the `statusLine` command in your
@@ -328,6 +349,57 @@ overrides the location.
 The server is read-only against your repository and binds to
 `127.0.0.1` only. It exposes repo paths, branch names and commit
 subjects; do not bind it to anything else.
+
+A board answers only its own page, in your account. It keeps its data
+(`report.json`, the shots) and every write behind a key, `servers/board.key`
+in the status-board home: 0600, in a 0700 folder, so another account on the
+machine, or a program that can reach the network and not your files, cannot
+read it. The key is in no link, no address and no text that Claude Code
+draws: the row above the prompt is a button, and the status line
+links the board itself, `http://127.0.0.1:<port>/`, never `localhost` (a
+browser given `localhost` may try `::1` first, where another program can
+listen), and neither holds a key. Your browser never gets the key either: it gets a token for that one
+board, from a small opener (`status-board/open_board.py`): click **board** in
+the row above the prompt (a click needs fullscreen rendering; otherwise type
+the digit 9 into an empty prompt, which presses it and is not typed, or press
+ctrl+x then Tab, Tab to the button and Enter), or tell the session "open the
+board". A board is opened from Claude Code for each browser tab. The opener
+writes a form that only your account can read and that holds the token, never
+the key; before it writes the form it asks the board's port to prove it holds
+the key (one request with a random challenge, carrying no secret); if the port
+does not prove it, nothing is opened and the opener says so, so the form's
+token is never posted to another program that happens to hold that port. It hands the
+file to your system's opener, which opens it as a new document, in a tab of
+its own (its name is new each time), where the form posts it to the board; the
+file is then removed. The token is bound to that run of the board (a new id
+each time the board starts), so a program that takes a stopped board's port
+and keeps what it was sent holds nothing the board will take when it is back.
+The board's own page keeps the token in that tab's own storage and sends it as
+a header to its own address, so no other tab and no server on another port
+receives it (a cookie would go to every one of them). A program that takes
+the port of a stopped board can still be sent the token by a tab that stays
+open, but it belongs to the run that ended: no board will take it, now or when
+the board is back. A token dies with that
+run of the board and with its tab: a reload keeps working, and a new tab, a
+bookmark or the status line's link shows a page that asks you to open the
+board from Claude Code. A write is accepted only from the board's
+own page, with its `Origin`, and only to a question the board asks. An answer
+recorded without the browser's same-page mark shows as "not marked as sent by
+a browser", and the session confirms it with you before it acts on anything
+hard to undo. A board started with `--host` also takes answers from the
+network with the printed token, which is not a proof of you: the board records
+them as coming from the network, and the session confirms them with you in the
+same way. Restart each running board once after updating: a board of an
+older release ignores the key and stays as open as it was.
+
+A new session in the project restarts a board that holds no key or does not
+answer as its project's board, when its server is the project's own (see "A
+dead board comes back"); that is what the button's sentence asks for. A
+board's server can also be stopped by hand: its record is
+`servers/<port>.json` in the status-board home (`~/.claude/status-board`, or
+where `STATUS_BOARD_HOME` points), and the `pid` in it is the board's server;
+stop that process (`kill <pid>`). A session in the project then starts the
+board again, with a key, the next time one starts there.
 
 Each board has its own port, derived from the project's path, which is
 the right thing for the board and hard for a person to keep in mind. So

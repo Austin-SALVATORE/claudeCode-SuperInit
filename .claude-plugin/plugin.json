@@ -20,13 +20,13 @@
     "board_link_row": {
       "type": "boolean",
       "title": "Board link above the prompt",
-      "description": "Show the status board's short address as a row above the prompt, in a session of a project that has a board. Needs Claude Code 2.1.287 or later. On unless you turn it off.",
+      "description": "Show a button above the prompt, in a session of a project that has a board, that opens the board in your browser. The button is drawn whenever either board link switch is on; only both off hides it. Needs Claude Code 2.1.287 or later. On unless you turn it off.",
       "default": true
     },
     "board_link_status_line": {
       "type": "boolean",
       "title": "Board link in the status line",
-      "description": "Show the board's address in your status line. Off until you set it up with /project-init:board-link, which edits nothing without your yes. The row above the prompt comes back by itself if the status line stops showing the link.",
+      "description": "Also put the board's link in your status line: an addition beside the button above the prompt, which it never replaces. Off until you set it up with /project-init:board-link, which edits nothing without your yes.",
       "default": false
     }
   }

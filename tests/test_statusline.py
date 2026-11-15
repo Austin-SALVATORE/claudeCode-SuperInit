@@ -135,7 +135,15 @@ class World:
 
     @property
     def url(self) -> str:
+        """The short address the helper's `url` still gives, and the hand-made filters still link to."""
         return f"http://localhost:{FRONT_PORT}/shop-app"
+
+    port = 40111  # the board's port in its server record
+
+    @property
+    def target(self) -> str:
+        """Where the status line's link leads since release 2.4.0: the board itself, on 127.0.0.1, never `localhost`."""
+        return f"http://127.0.0.1:{self.port}/"
 
     def env(self, **extra: str) -> dict:
         env = {"HOME": str(FAKE_HOME), "PATH": SAFE_PATH, "STATUS_BOARD_HOME": str(self.state), "STATUS_BOARD_FRONT_PORT": str(FRONT_PORT),
@@ -192,7 +200,7 @@ def test_link_right_after_the_context_usage_and_nothing_else_moves():
     world = World()
     out = run_filter(world, HUD, COLUMNS="100")
     assert lines(out) == ["[Sonnet] │ shop-app git:(main)", "Context █░░░░░░░░░ 12% | board"], lines(out)
-    assert world.url.encode() in out and b"\x1b]8;;" in out, "board is a link (OSC 8) to the address"
+    assert world.target.encode() in out and b"\x1b]8;;" in out, "board is a link (OSC 8) to the board's own address"
     assert out.startswith(b"[Sonnet] "), "what came before is untouched"
 
 
@@ -315,7 +323,7 @@ def test_kept_answer_used_when_nothing_changed():
     log = TMP / f"helper-runs-{time.time_ns()}.log"
     (stub / "board_link.py").write_text(
         "import json, os, sys\nopen(%r, 'a').write('x')\n"
-        "sys.stdout.write(json.dumps({'state': '', 'url': %r, 'up': True}) + '\\n')\n" % (str(log), world.url))
+        "sys.stdout.write(json.dumps({'state': '', 'url': %r, 'up': True, 'port': %d}) + '\\n')\n" % (str(log), world.url, world.port))
     env = world.env(COLUMNS="100")
     for _ in range(3):
         done = subprocess.run([sys.executable, "-B", str(stub / "statusline_filter.py")], input=HUD.encode(), capture_output=True, env=env, cwd=str(TMP), timeout=30)
@@ -355,7 +363,7 @@ def test_a_planted_cache_file_in_the_shared_temporary_folder_is_never_read():
             (folder / name).write_text(json.dumps({"url": url, "up": True}))
         shown = run_filter(world, HUD, COLUMNS="100")
         assert url.encode() not in shown and b"planted" not in shown and b"evil" not in shown, f"{label}: a planted file was used: {shown!r}"
-        assert world.url.encode() in shown, f"{label}: the real address is asked for and shown: {shown!r}"
+        assert world.target.encode() in shown, f"{label}: the real address is asked for and shown: {shown!r}"
 
 
 def test_a_cached_address_is_checked_like_a_fresh_one_and_the_cache_is_in_the_data_folder():
@@ -364,17 +372,142 @@ def test_a_cached_address_is_checked_like_a_fresh_one_and_the_cache_is_in_the_da
     start = str(world.project)
     name = hashlib.sha1(start.encode()).hexdigest()[:16]
     shown = run_filter(world, HUD, COLUMNS="100")
-    assert world.url.encode() in shown
+    assert world.target.encode() in shown
     cache = cache_dir_of(world)
     assert (cache / name).is_file(), f"the answer is kept in the data folder: {sorted(str(p.relative_to(world.root)) for p in world.root.rglob('*') if p.is_file())[:12]}"
     assert not list(TMPDIR.glob("board-link-statusline*")), "nothing is kept in the temporary folder any more"
     for label, url in list(PLANTED.items())[1:]:  # the first has the right shape: a file in the user's own data folder is as trusted as the user
-        (cache / name).write_text(json.dumps({"url": url, "up": True}))  # fresh: newer than any board change, so it would be used if it were believed
+        (cache / name).write_text(json.dumps({"url": url, "up": True, "port": world.port}))  # fresh: newer than any board change, so it would be used if it were believed
         shown = run_filter(world, HUD, COLUMNS="100")
         assert url.encode() not in shown and b"evil" not in shown and b"planted" not in shown, f"{label}: an address that fails the check was used: {shown!r}"
-        assert world.url.encode() in shown, f"{label}: the helper is asked again and its address shown: {shown!r}"
+        assert world.target.encode() in shown, f"{label}: the helper is asked again and its address shown: {shown!r}"
+    (cache / name).write_text(json.dumps({"url": world.url, "up": True, "port": world.port}))
+    assert world.target.encode() in run_filter(world, HUD, COLUMNS="100"), "a good kept answer is still used"
+
+
+# ── release 2.4.0: the key is in no link of the status line, and in no file the filter writes ──────────────────────────────────
+def make_board_key(world: World, mode: int = 0o600) -> str:
+    """`servers/board.key` as a board server of 2.4.0 makes it: 32 random bytes, 0600, in a 0700 folder. Returns its 64 hex characters."""
+    servers = world.state / "servers"
+    servers.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(servers, 0o700)
+    key = os.urandom(32)
+    fd = os.open(servers / "board.key", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(key)
+    os.chmod(servers / "board.key", mode)
+    return key.hex()
+
+
+def targets_of(out: bytes) -> list[str]:
+    """The address behind each OSC 8 link of the output."""
+    return [m.group(1).decode() for m in re.finditer(rb"\x1b\]8;;([^\x07\x1b]+)(?:\x07|\x1b\\)", out)]
+
+
+def fake_helper(world: World, said: dict) -> Path:
+    """A copy of the plugin's status-board folder whose helper prints `said`, and the filter beside it."""
+    copy = world.root / f"helper-{time.time_ns()}"
+    shutil.copytree(PLUGIN / "status-board", copy / "status-board", ignore=shutil.ignore_patterns("__pycache__"))
+    (copy / "status-board" / "board_link.py").write_text("import json\nprint(json.dumps(%r))\n" % (said,))
+    return copy / "status-board" / "statusline_filter.py"
+
+
+def run_copy(world: World, filter_path: Path, **env_extra: str) -> bytes:
+    done = subprocess.run([sys.executable, "-I", "-S", "-B", str(filter_path)], input=HUD.encode(), capture_output=True, env=world.env(**env_extra),
+                          cwd=str(TMP), timeout=30)
+    assert done.returncode == 0, done.stderr.decode(errors="replace")[:200]
+    return done.stdout
+
+
+def test_statusline_target_is_127_0_0_1_port():
+    """Release 2.4.0: the link's target is the board's own `http://127.0.0.1:<port>/`, never `localhost`: a browser given `localhost` may try `::1`
+    first, where another program can listen unless the front door, which holds `::1` as well, got there first. The port is the helper's
+    new key `port`, beside `url` and `up`; the text of the link, the red and the (down) are as before."""
+    fresh_tmpdir()
+    world = World()
+    out = run_filter(world, HUD, COLUMNS="100")
+    assert targets_of(out) == [f"http://127.0.0.1:{world.port}/"], targets_of(out)
+    assert b"localhost" not in out, "no `localhost` anywhere in what the status line prints"
+    assert lines(out) == ["[Sonnet] │ shop-app git:(main)", "Context █░░░░░░░░░ 12% | board"], lines(out)
+    kept = run_filter(world, HUD, COLUMNS="100")  # the kept answer carries the port too
+    assert targets_of(kept) == [world.target] and b"localhost" not in kept
+    fresh_tmpdir()
+    down = World(up=False)
+    shown = run_filter(down, HUD, COLUMNS="100")
+    assert targets_of(shown) == [down.target] and b"\x1b[31m" in shown and b"(down)" in strip(shown.decode()).encode(), "a board that is down: the same target, red, (down)"
+
+
+def test_statusline_target_follows_the_port_the_helper_gives_and_nothing_else():
+    """The target is built from `port` alone, and only from a plain number of a port: anything else adds no link (the lines are printed as they came),
+    it never falls back to `localhost` or to the short address, and no text of the helper's goes into the escape sequence."""
+    fresh_tmpdir()
+    world = World()
+    good = {"state": "", "url": world.url, "up": True}
+    assert targets_of(run_copy(world, fake_helper(world, {**good, "port": 5173}), COLUMNS="100")) == ["http://127.0.0.1:5173/"]
+    plain = HUD.encode()
+    for label, port in {"no port": None, "a string": "40111", "a text with an escape": "1\x1b]52;c;ZXZpbA==\x07", "zero": 0, "negative": -5, "too big": 65536,
+                        "a float": 40111.5, "a bool": True, "a list": [40111]}.items():
+        shutil.rmtree(cache_dir_of(world), ignore_errors=True)  # the helper is asked, not the answer kept from the call before
+        said = dict(good) if label == "no port" else {**good, "port": port}
+        shown = run_copy(world, fake_helper(world, said), COLUMNS="100")
+        assert shown == plain, f"{label}: a link was placed from a port that is not a port: {shown!r}"
+
+
+def test_a_kept_answer_without_a_port_is_asked_again():
+    """A file kept by 2.3.x within the minute holds `url` and `up` only: it is not believed, the helper is asked, and the link has the new target."""
+    fresh_tmpdir()
+    world = World()
+    start = str(world.project)
+    name = hashlib.sha1(start.encode()).hexdigest()[:16]
+    run_filter(world, HUD, COLUMNS="100")
+    cache = cache_dir_of(world)
     (cache / name).write_text(json.dumps({"url": world.url, "up": True}))
-    assert world.url.encode() in run_filter(world, HUD, COLUMNS="100"), "a good kept answer is still used"
+    shown = run_filter(world, HUD, COLUMNS="100")
+    assert targets_of(shown) == [world.target], targets_of(shown)
+    assert json.loads((cache / name).read_text()).get("port") == world.port, "and the answer kept now has the port"
+
+
+def test_what_the_hand_made_filter_reads_is_unchanged():
+    """`url` and `up` are the contract with a hand-made board filter from before 2.3.0 (which reads those two and links to `url`): the helper still gives
+    them exactly as before, and the new key is beside them."""
+    fresh_tmpdir()
+    world = World()
+    done = subprocess.run([sys.executable, "-B", str(STATUS / "board_link.py"), "--start", str(world.project), "--no-agent-check"], capture_output=True,
+                          text=True, env=world.env(), cwd=str(TMP), timeout=30, stdin=subprocess.DEVNULL)
+    said = json.loads(done.stdout)
+    assert said["url"] == world.url and said["up"] is True and said["port"] == world.port, said
+    assert re.fullmatch(r"http://localhost:\d+/[A-Za-z0-9._~%-]+", said["url"]), "the hand-made filter's own check of `url` still passes"
+
+
+def test_no_key_in_the_status_lines_output_its_cache_or_anything_it_writes():
+    """The link's target is the short address, whether or not the home has a board key; the key is in no byte of the output, in no file of the
+    plugin's data folder (the cache, the marker), and in nothing in the temporary folder."""
+    fresh_tmpdir()
+    world = World()
+    key = make_board_key(world)
+    out = run_filter(world, HUD, COLUMNS="100")
+    assert targets_of(out) == [world.target], targets_of(out)
+    assert key.encode() not in out and b"?k=" not in out, "the key is in the status line's output"
+    assert lines(out) == ["[Sonnet] │ shop-app git:(main)", "Context █░░░░░░░░░ 12% | board"], lines(out)
+    run_filter(world, HUD, COLUMNS="100")  # a kept answer, and the marker
+    written = b"".join(p.read_bytes() for p in list(world.data.rglob("*")) + list(TMPDIR.rglob("*")) if p.is_file())
+    assert written and key.encode() not in written, "the key is in a file that the filter wrote"
+    assert b"?k=" not in written
+
+
+def test_a_helper_that_says_an_open_address_is_not_followed():
+    """An older or hostile helper that prints an `open` with a key: the filter takes the short address and drops the rest."""
+    fresh_tmpdir()
+    world = World()
+    key = "ab" * 32
+    helper = world.root / "plugin-copy"
+    shutil.copytree(PLUGIN / "status-board", helper / "status-board", ignore=shutil.ignore_patterns("__pycache__"))
+    (helper / "status-board" / "board_link.py").write_text(
+        "import json\nprint(json.dumps({'state': '', 'url': %r, 'up': True, 'port': %d, 'open': %r + '?k=' + %r}))\n" % (world.url, world.port, world.url, key))
+    done = subprocess.run([sys.executable, "-I", "-S", "-B", str(helper / "status-board" / "statusline_filter.py")], input=HUD.encode(), capture_output=True,
+                          env=world.env(COLUMNS="100"), cwd=str(TMP), timeout=30)
+    assert done.returncode == 0 and targets_of(done.stdout) == [world.target], (done.returncode, targets_of(done.stdout))
+    assert key.encode() not in done.stdout + b"".join(p.read_bytes() for p in world.data.rglob("*") if p.is_file()), "the key was shown or kept"
 
 
 def test_seen_is_touched_only_when_the_link_is_placed_once_per_minute():
@@ -433,7 +566,7 @@ def test_launcher_runs_the_installed_plugins_filter():
     fresh_tmpdir()
     world = World()
     out = run_launcher(world, HUD.encode())
-    assert b"| board" in strip(out.decode()).encode() and world.url.encode() in out, out
+    assert b"| board" in strip(out.decode()).encode() and world.target.encode() in out, out
 
 
 def test_launcher_without_the_plugin_installed_prints_stdin_unchanged():

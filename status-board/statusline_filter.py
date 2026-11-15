@@ -4,10 +4,18 @@
     <a status line command> | python3 -I -S -B statusline_filter.py        (through statusline_launcher.py, see statusline_setup.py)
 
 A filter: it reads the lines a status line printed (stdin), adds ` | board` right after the context usage (`█░░░ 12%`),
-before whatever follows it on that line, where `board` is an OSC 8 hyperlink to the project's board address
-(`http://localhost:8800/<name>`), and prints the result. Where there is no context bar, or the line has no room for the
+before whatever follows it on that line, where `board` is an OSC 8 hyperlink to the project's board
+(see below), and prints the result. Where there is no context bar, or the line has no room for the
 link, it goes at the end of the first line with room, else of the last line with room, else on a line of its own: never
 past the window's edge. It is what the hand-made filters that some set-ups used before 2.3.0 did (a script named `hud-board-link.py`), generalised: nothing of one machine in it.
+
+**Where the link leads (release 2.4.0).** To `http://127.0.0.1:<port>/`, the board itself, never to `localhost` and not through the front
+door: the door holds both loopback addresses (`127.0.0.1` and `::1`) while it runs, but a browser given `localhost` may try `::1` first, and
+where nothing of ours holds it (the door is not running, or another program got there first) another program can listen there and answer in the
+board's name. The port is the helper's new key `port`, beside `url` and `up`, which are what they were: a hand-made filter that reads `url`
+and `up` goes on linking to the short address `url`, the front door's.
+Here `url` must still be well-formed for the answer to be believed, but it is not the target; a helper that gives no port that is a
+plain number of a port (1 to 65535) adds no link, never a link to `localhost`.
 
 Nothing is added when the project has no board; ` (down)` follows the link where there is room for it, and the link is
 red, when the board's server is not running. **Any error prints the lines exactly as they came** (the bytes, not a copy
@@ -27,8 +35,9 @@ against the FULL width: `BOARD_LINK_COLUMNS` (the window's `COLUMNS` before that
 (a status line with no width known has none to wrap at either). So no line it places the link on is wider than the window.
 
 **Where the link was seen.** Each time it places the link it touches `seen/<first 16 hex of the sha1 of the start folder's
-path>` in the plugin's data folder, at most once a minute: the row above the prompt (hooks/board-link.tsx) hides while the
-status line shows the link and comes back by itself when it stops. The start folder is hashed as it was given and, where
+path>` in the plugin's data folder, at most once a minute. The button above the prompt (hooks/board-link.tsx) does not read it:
+it is drawn whenever either board link switch is on, and the status line's link is an addition beside it. The mark stays for the
+helper's `status_line_seen` key, which hand-made readers may use. The start folder is hashed as it was given and, where
 that differs, as it resolves, so a reader that has the other spelling finds the file too. The data folder is
 `CLAUDE_PLUGIN_DATA` when the launcher gives it (its own folder; a status line command is not given it by Claude Code),
 else `<config>/plugins/data/project-init-claudecode-superinit`.
@@ -114,8 +123,13 @@ def status_board_home(env=os.environ) -> Path:
     return Path(env.get("STATUS_BOARD_HOME") or Path.home() / ".claude" / "status-board")
 
 
+def valid_port(port) -> bool:
+    """A port as the helper gives it: a plain integer from 1 to 65535 (not a bool, a float or a text)."""
+    return type(port) is int and 0 < port < 65536
+
+
 def ask_helper(start: str) -> dict:
-    """{"url": ..., "up": ...} for the project started in `start`, or {} when it has no board."""
+    """{"url": ..., "up": ..., "port": ...} for the project started in `start`, or {} when it has no board (or no port to link to)."""
     helper = Path(__file__).resolve().with_name("board_link.py")
     if not helper.is_file():
         return {}
@@ -129,9 +143,10 @@ def ask_helper(start: str) -> dict:
     )
     said = json.loads(done.stdout.strip() or "null")
     url = said.get("url") if isinstance(said, dict) else None
-    if not isinstance(url, str) or not ADDRESS.fullmatch(url):
+    port = said.get("port") if isinstance(said, dict) else None
+    if not isinstance(url, str) or not ADDRESS.fullmatch(url) or not valid_port(port):
         return {}
-    return {"url": url, "up": said.get("up") is True}
+    return {"url": url, "up": said.get("up") is True, "port": port}
 
 
 def boards_changed_at() -> float:
@@ -159,9 +174,9 @@ def kept_answer(cache: Path) -> dict | None:
     if kept == {}:
         return kept  # "no board", kept for a minute like any other answer
     url = kept.get("url")
-    if not isinstance(url, str) or not ADDRESS.fullmatch(url):
-        return None
-    return {"url": url, "up": kept.get("up") is True}
+    if not isinstance(url, str) or not ADDRESS.fullmatch(url) or not valid_port(kept.get("port")):
+        return None  # also an answer kept by 2.3.x, which had no port: asked again
+    return {"url": url, "up": kept.get("up") is True, "port": kept["port"]}
 
 
 def board_of(start: str) -> dict:
@@ -213,12 +228,13 @@ def place_link(hud: str, board: dict, columns: int) -> str | None:
 
     `columns` is the window's full width, 0 for no limit. The link goes right after the context usage where the line has
     room, else at the end of the first line with room, else of the last, else on a line of its own."""
-    url = board.get("url")
-    if not url:
+    port = board.get("port")
+    if not board.get("url") or not valid_port(port):
         return None
+    target = f"http://127.0.0.1:{port}/"  # the board itself: see the docstring
     up = bool(board.get("up"))
     # A board that is down is red, and says so in words where the line has room for them.
-    short = f"\x1b]8;;{url}\x1b\\{CYAN if up else RED}{LINK_TEXT}{RESET}\x1b]8;;\x1b\\"
+    short = f"\x1b]8;;{target}\x1b\\{CYAN if up else RED}{LINK_TEXT}{RESET}\x1b]8;;\x1b\\"
     links = [short] if up else [f"{short}{DIM}{DOWN_TEXT}{RESET}", short]
     lines = hud.rstrip("\n").split("\n")
     filled = [i for i, line in enumerate(lines) if width(line) > 0]
