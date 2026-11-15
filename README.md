@@ -5,9 +5,12 @@ day one, instead of letting it acquire one by accident.
 
 Two skills:
 
-- **`project-bootstrap`** — scaffolds `.claude/`: role definitions for a
-  team lead, architect, dev and QA; a subagent bench; verification and
-  release rules; and handoff skills.
+- **`project-bootstrap`** — scaffolds how a project is run under Orca and
+  oh-my-claudecode, in seven small files: the operating model (the
+  coordinator, the worker roster, the Task title, worktrees, when an
+  independent check is required), the verification and release rules,
+  the workstream register, and two skills (`task-spec`, the brief for a
+  worker; `milestone-acceptance`).
 - **`status-board`** — a local web page per project, built around two
   lists: the questions that need you, and the project's workstreams.
   Status, findings and everything else sit under them, so structured work
@@ -26,8 +29,13 @@ Then, in any project:
 /project-bootstrap
 ```
 
-Running `/init` on a repository with no `.claude/` triggers the same
-thing.
+Running `/init` on a repository with no `.claude/rules/operating-model.md`
+triggers the same thing. The scaffold names Orca's commands and
+oh-my-claudecode's agents, so it is for projects run under both; the skill
+checks that first and stops if either is missing. A project that has the
+older set (made before the Orca-only scaffold) is moved on by
+`/project-bootstrap update`, a step you run: it shows what it would add and
+retire, asks, and leaves every change uncommitted.
 
 **After an update: start each running board's server again, once.** A board
 made by an earlier version has no `repo.json` (the record, written when the
@@ -49,22 +57,37 @@ path, so a bug in either costs you the old behaviour, never the session.
 A new session in a new folder never suggested `/project-bootstrap`, so the
 working practice this plugin exists to provide arrived only if you
 remembered to ask for it. `hooks/offer-bootstrap.py` now tells the agent,
-in a fresh session, to offer it — and to ask what the project is and who
-works on it *before* anything is written. A hook cannot run a skill, only
-instruct the agent, so what is guaranteed is the instruction and its
-order: no scaffolding without your yes.
+in a fresh session, to offer it — and to ask what the project is *before*
+anything is written. A hook cannot run a skill, only instruct the agent, so
+what is guaranteed is the instruction and its order: no scaffolding without
+your yes. The hook never edits a repository.
 
-"No team structure" means no `.claude/rules/team-roles.md` at the working
-directory or at its git top-level. A bare `.claude/` is not enough: Claude
-Code creates `.claude/settings.local.json` by itself, so testing for the
-directory would count nearly every folder as done.
+It offers **only inside Orca** (`ORCA_TERMINAL_HANDLE` is set), in a git
+project (the working directory has a git top-level that is not `$HOME`),
+when there is no `.claude/rules/operating-model.md` at the working
+directory, at its git top-level or **in its main checkout**. The main
+checkout is found from the worktree's own `.git` file, without running git,
+so a worktree of a bootstrapped project stays silent even before the
+scaffold is committed on its branch. A bare `.claude/` is not enough:
+Claude Code creates `.claude/settings.local.json` by itself, so testing for
+the directory would count nearly every folder as done.
 
-The offer stays silent:
+A project that has the older set (`.claude/rules/` with its role file and
+no `operating-model.md`) is not offered the new one. A session there is
+told once per session, at startup or `/clear`, that `/project-bootstrap update` can show
+what it would add and retire, and is told not to edit those files itself.
 
-- in `$HOME`, in `/`, and anywhere inside `~/.claude`;
-- unless the session is a fresh start or `/clear` — never on resume,
-  compact or fork, so it does not repeat;
+The offer and that note stay silent:
+
+- outside Orca, in a folder that is not a git project, in `$HOME`, in `/`,
+  and anywhere inside `~/.claude`;
+- unless the session is a fresh start (`startup`) or `/clear` — never on
+  resume, compact or fork, so it does not repeat;
 - in an agent session rather than yours (below);
+- in a run nobody attends: `claude -p` and the SDK, where Claude Code sets
+  `CLAUDE_CODE_SESSION_ATTENDED=0` and a `CLAUDE_CODE_ENTRYPOINT` that starts
+  with `sdk` (either one is enough; an older Claude Code that sets neither
+  is treated as attended);
 - when you have opted out.
 
 **Opting out.** Either of these:
@@ -73,20 +96,20 @@ The offer stays silent:
   everywhere. Put it in the `env` block of `~/.claude/settings.json` to
   make it permanent.
 - An empty file `.claude/no-bootstrap-offer` turns it off for that folder
-  (checked at the working directory and at its git top-level). Commit it
+  (checked at the working directory, at its git top-level and in its main checkout). Commit it
   or git-ignore it, as you prefer.
 
-**Teammates.** Subagents and in-process teammates never trigger
+**Agent sessions.** Subagents and in-process teammates never trigger
 `SessionStart`, so they never see the offer. A split-pane teammate is a
 separate Claude Code process and does. The hook recognises one from
 `agent_type` or `agent_id` in its payload, and from the `--agent-id` /
 `--parent-session-id` flags on an ancestor process: recorded launches of
-seven real pane teammates carry both, and the lead sessions inspected carry
-neither. Neither tell has been seen in a live teammate's `SessionStart` —
-the flags come from those recorded launches, `agent_type` from the
-documentation and from the `agent-setting` record that every teammate
-transcript examined opens with. If both are missing a teammate sees the
-offer: noise, not damage.
+seven real pane teammates carry both, and the sessions inspected that were
+not one carry neither. Neither tell has been seen in a live teammate's
+`SessionStart` — the flags come from those recorded launches, `agent_type`
+from the documentation and from the `agent-setting` record that every
+teammate transcript examined opens with. If both are missing a teammate sees
+the offer: noise, not damage. An Orca worker is recognised as below.
 
 ### A dead board comes back
 
@@ -115,6 +138,40 @@ a board you had exposed with `--host` needs `--host` again. Nor can the
 hook tell a different project's board on the same derived port (there are
 120 ports) from this one; it leaves that alone.
 
+### The board's link is in the session
+
+In a session of a project that has a board, a row above the prompt shows the
+board's short address, `http://localhost:8800/<name>`, as a link
+(`hooks/board-link.tsx`, with `status-board/board_link.py`). It is a mod,
+which needs Claude Code 2.1.287 or later; an older one ignores the file and
+every hook above still works. The link is a real OSC 8 hyperlink where the
+terminal supports them (iTerm2, Ghostty, WezTerm, kitty: command-click or
+ctrl-click), and the plain address elsewhere; a row you do not want can be
+folded away with ctrl+x ctrl+a. After the address, `(not running)` says that
+the board's server is not alive: it comes within five minutes of the server
+stopping (a server that dies changes no file, so the row finds out at its next
+five-minute look), and a process id that another program has taken since keeps
+the address without the mark. The link goes to the front door in any case,
+and the door says what is there. If another program holds port 8800, the link
+leads there; the board's port address, from its start line, still works.
+
+The project, the board and the name are found as the rest of the plugin finds
+them: the board from the folder the session was started in
+(`answer_ledger.find_board`), the name by the front door's own rule
+(`FrontDoor.resolve`). Nothing is shown where there is nothing to show: no
+project, no board, a board never started, a name that the front door would not
+send to this project's board, a worker, a teammate, a subagent, `claude -p`.
+It follows the session: a board started later appears within ten seconds,
+without a restart, and the row survives `/clear`, `/compact` and a resume.
+
+It costs nothing: it sends no request, to a board or to the front door (the
+helper reads `repo.json` and the records under `servers/`, and never a board's
+answers or narrative), writes no file, and any error draws nothing. A session
+looks at two folders every ten seconds with no process, starts the helper at
+the start, when a folder has changed, and every five minutes otherwise (about
+thirteen runs of 70 ms an hour). Opening the link records nothing: only a tap
+on the board does.
+
 ### Under Orca, a worker is not the owner's session
 
 Orca's coordinator starts workers with `orca orchestration worker-start`,
@@ -136,28 +193,40 @@ listing command. A terminal that hosted a worker once does not count: a
 session you start there yourself is yours. Any doubt counts as "not a
 worker", and the hook does what it did before.
 
-`tree-lock-guard.py` is unchanged and does not see an Orca dispatch: it
-watches `Agent`, `Task` and `SendMessage`, and an Orca worker is started
-from a shell command. Under Orca the shared checkout is protected by
-giving a worker its own worktree, not by this lock.
+Nothing in the plugin guards a shared checkout against two writers: the
+rule is the worktree rule of `operating-model.md`. **One writing worker per
+worktree**: a worker that changes files gets its own
+(`--worktree new-child`), a worker that only reads may share the
+coordinator's, the coordinator merges one branch at a time, and nobody
+reverts another worker's uncommitted work. The hook that used to watch
+`Agent`, `Task` and `SendMessage` never saw an Orca dispatch, since a worker
+is started from a shell command; it is gone, and the board's report no
+longer carries its row.
 
 ## What the scaffold actually asserts
 
 The point is not the file tree — it is the separation:
 
-**Design, implementation, and verification are held by different roles.**
+**Design, implementation, and verification are held by different workers.**
 Whoever designs a thing is the worst judge of whether the design is
 sound, and whoever built it is the worst judge of whether it works.
 
-So the lead reads, judges, and briefs, and does not write product code
-or mutate git. The architect plans and cannot implement. The dev
-executes a reviewed plan. QA files findings and never fixes them. A
-completion report is checked against the repository before it is
-believed.
+So the coordinator reads, judges, and briefs, and hands work to Orca
+workers: an architect plans, an executor carries out a reviewed plan, QA
+files findings and never fixes them. The roster in `operating-model.md`
+names oh-my-claudecode's agents and gives each a model tier, not a model
+name, so it does not go stale when a model is renamed. An independent
+check, by a different worker, is required only where a fault is expensive
+and cannot be seen by looking: the path that records your decisions,
+secrets, data, accounts, and before a commit or a release. It never holds
+back your preview. A completion report is checked against the repository
+before it is believed.
 
 Work is routed by size, in both directions — a one-line fix does not get
 a plan, and a subsystem does not get hand-written because briefing felt
-slower than drafting.
+slower than drafting. Every worker is started with a Task title,
+`role | WS-id | subject`, and the status board links it to its workstream
+from the id; the register is `docs/workstreams/README.md`.
 
 ## The verification rules are the part worth reading
 
@@ -353,12 +422,11 @@ instrument, not effort* — broken by its author.
 
 ## Requirements
 
-Python 3 for the status board and the session-start hooks. The agent-team roles need
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in `settings.json` **before
-a session starts** — setting it mid-session puts the variable in the
-environment but never builds the team infrastructure, so spawns quietly
-become subagents instead. The scaffolded `.claude/settings.json` sets
-it; the first session after bootstrap is the one where it takes effect.
+Python 3 for the status board and the session-start hooks. The scaffold
+that `project-bootstrap` writes needs Orca (its `orca` command, or the
+terminal handle it sets) and oh-my-claudecode, whose agents the worker
+roster names; the skill checks both before it writes anything. It writes no
+setting and no environment variable.
 
 ## Releasing
 

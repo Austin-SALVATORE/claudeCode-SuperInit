@@ -13,7 +13,9 @@ the wrong thing in a worker's:
     told it to act on them, and marked them as surfaced, so the coordinator's
     own hook then stayed silent about the same answers.
   * offer-bootstrap.py offered /project-bootstrap before the worker's task,
-    in a worktree that is one task's checkout, not a new project.
+    in a worktree that is one task's checkout, not a new project. It now offers
+    only inside Orca, in a git project with no .claude/rules/operating-model.md
+    (here or in its main checkout), and stays silent in a worker as before.
 
 Nothing in the environment tells the two apart: a worker and a coordinator
 are launched with the same flags and the same ORCA_* variables (compared on
