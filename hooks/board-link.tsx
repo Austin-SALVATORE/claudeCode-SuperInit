@@ -106,14 +106,27 @@ export const register: Register = on => {
     }
 
     const { Box, Text, Link } = $.ui.resolve(e)
+    // Before Claude Code 2.1.323 every mod shared one drawing in the band, and a tree without the result of `await next(e)`
+    // in it replaced what the mods after it drew. From 2.1.323 that child draws nothing of other mods' rows. For the tree to
+    // stay valid on the older releases, no Box of ours carries width, height, minWidth, minHeight, position, top, left, right,
+    // bottom, display or overflow (the docs: troubleshoot, "Another mod's band shows and yours doesn't").
+    const theirs = await next(e)
 
+    // The content sits at the right end of the row, beside the engine's [-]: the inner Box is a row stretched across the
+    // band by the column Box around it, and `justifyContent="flex-end"` puts what it holds at its end. That follows the
+    // terminal's width by itself (a resize moves it); nothing here counts columns or pads with spaces. One Text holds the
+    // label, the link and the marker, truncated at its end: a name too long for the row is cut with an ellipsis, and the
+    // row stays one row with the [-] where it was (the link keeps the whole address; only what is drawn is cut).
     return (
-      <Box>
-        <Text dimColor>board </Text>
-        <Text>
-          <Link href={shown.url} />
-        </Text>
-        {shown.up ? null : <Text dimColor> (not running)</Text>}
+      <Box flexDirection="column">
+        <Box justifyContent="flex-end">
+          <Text wrap="truncate-end">
+            <Text dimColor>board </Text>
+            <Link href={shown.url} />
+            {shown.up ? null : <Text dimColor> (not running)</Text>}
+          </Text>
+        </Box>
+        {theirs}
       </Box>
     )
   })

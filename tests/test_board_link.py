@@ -489,6 +489,46 @@ def test_the_status_board_skill_says_the_row_is_there_and_to_give_the_address_on
     assert " he " not in sentence and "his" not in sentence.split()
 
 
+def test_the_row_sits_at_the_right_end_by_layout_and_never_by_padding_with_spaces():
+    """The owner's ask of 15 Nov (13:52): the content at the right end of the row, beside the engine's [-]. By the Box's own
+    `justifyContent`, which follows the width of the terminal (a resize moves it); never by counting columns and padding."""
+    text = MOD.read_text()
+    assert 'justifyContent="flex-end"' in text, "the row's content is not laid out at the end of its row"
+    for guess in ("bodyColumns", "viewport", ".repeat(", "padStart", "padEnd", "' '.repeat", '" ".repeat'):
+        assert guess not in text, f"the mod guesses the width of the terminal: {guess}"
+    assert not re.search(r"<Text[^>]*>[ ]{3,}\S", text), "padding with spaces inside a Text"
+
+
+def test_a_name_too_long_for_the_row_is_cut_with_an_ellipsis_and_keeps_one_row():
+    """Never a second row, never the engine's [-] pushed away: the one Text that holds the address is truncated at the end
+    (the link keeps the whole address: the cut is of what is drawn)."""
+    text = MOD.read_text()
+    assert 'wrap="truncate-end"' in text, "the row does not truncate"
+    assert re.search(r'<Text wrap="truncate-end">\s*<Text dimColor>board </Text>\s*<Link href=\{shown\.url\} />', text), \
+        "the label, the Link and the marker are not one truncated Text"
+
+
+def test_the_row_does_not_replace_the_rows_of_other_mods():
+    """Before Claude Code 2.1.323 all mods shared one drawing in the band, and a tree without `await next(e)` in it replaced
+    what the mods after it drew (the docs: interface.md, 'Band above the prompt', and troubleshoot.md, 'Another mod's band shows
+    and yours doesn't'). The result of `await next(e)` is among the children of a Box, and no Box of the row carries a prop
+    that makes the tree invalid there: width, height, minWidth, minHeight, position, top, left, right, bottom, display, overflow."""
+    text = MOD.read_text()
+    assert re.search(r"const theirs = await next\(e\)", text), "the row does not keep what the mods after it draw"
+    assert re.search(r"<Box flexDirection=\"column\">[\s\S]*\{theirs\}[\s\S]*</Box>", text), "`theirs` is not a child of a Box"
+    for box in re.findall(r"<Box\b[^>]*>", text):
+        bad = re.findall(r"\b(width|height|minWidth|minHeight|position|top|left|right|bottom|display|overflow)\s*=", box)
+        assert not bad, f"{box} carries {bad}, which makes the tree invalid before 2.1.323"
+    assert "return next(e)" in text, "with nothing to show the row must still pass the event on"
+
+
+def test_the_readme_says_where_the_row_sits_and_what_a_narrow_terminal_does():
+    text = " ".join((PLUGIN / "README.md").read_text().split())
+    assert re.search(r"at the right end of the row, beside the `\[-\]`", text), "README.md does not say the content is at the right end"
+    assert "ellipsis" in text and "full address" in text, "README.md does not say what a name too long for the row does"
+    assert "2.1.323" in text and "other mods" in text, "README.md does not say the row leaves other mods' rows alone"
+
+
 def test_claude_validates_the_plugin_with_the_mod():
     claude = shutil.which("claude")
     if not claude:
