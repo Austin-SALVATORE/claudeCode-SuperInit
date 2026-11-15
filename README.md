@@ -177,6 +177,58 @@ the start, when a folder has changed, and every five minutes otherwise (about
 thirteen runs of 70 ms an hour). Opening the link records nothing: only a tap
 on the board does.
 
+### Where the board's link shows: the row, the status line, or both
+
+Two switches of the plugin's own say where. They are Claude Code's plugin
+options: shown when the plugin is installed (a dialog), kept per user in your
+settings, unchanged by updates, and changeable at any time in `/config`
+(search for "board link"); a change takes effect at once, without a restart.
+
+| Switch | Default |
+|---|---|
+| **Board link above the prompt** | on: the row above, as described above |
+| **Board link in the status line** | off: nothing is put in your status line until you ask |
+
+Nothing here needs anything else: with the defaults the row is shown and the
+plugin works without claude-hud, as it did before; claude-hud is optional and
+the plugin has no dependency on it. Someone who updates from an older release
+is not asked anything and gets the defaults.
+
+To have the link in the status line, run `/project-init:board-link`. It asks
+once where the link should show (above the prompt, in the status line, or
+both) and, for the status line:
+
+- if you use claude-hud (another author's status line plugin, which shows the
+  model, the context bar and git), it adds a small filter after your status
+  line command, so that a clickable `board` sits right after the context usage;
+  it shows you the old and the new command first and writes nothing without
+  your yes; where your permission settings ask, Claude Code's own permission
+  prompt asks again;
+- if you do not have claude-hud, it only names claude-hud's own commands for you
+  to type (it never installs another author's plugin, and never sets your
+  status line for you); until your status line shows the link, the row stays;
+- if you have a status line of your own, the same filter can be added after it;
+  any failure of the filter prints your status line exactly as it came.
+
+The row is never lost. The filter marks each time it places the link, and the
+row, if you turned it off for the status line, comes back by itself within ten
+minutes of the status line no longer showing it: claude-hud's set-up rewrote
+the command, claude-hud was removed, Python is missing, or the plugin is gone.
+Both switches off is your choice too: nothing is shown. The question is raised
+at most once per user: by `/project-bootstrap`, or by one line in the first
+interactive session in a project with a board, never in a worker, a teammate or
+`claude -p`.
+
+To take the link out of the status line, choose "Take the link out of the status
+line" in `/project-init:board-link`, or run `python3
+status-board/statusline_setup.py remove` from the plugin: it puts your old
+command back exactly; the row comes back within ten minutes (or turn it on in
+`/config`). If the plugin was removed
+first, the filter in your status line command is harmless (it prints your
+status line unchanged): your old command is the part inside `out=$( … )`, and
+you can put it back by editing the `statusLine` command in your
+`settings.json`.
+
 ### Under Orca, a worker is not the owner's session
 
 Orca's coordinator starts workers with `orca orchestration worker-start`,

@@ -389,9 +389,12 @@ def test_the_hook_writes_nothing():
     imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not imported & {"urllib", "http", "socket", "requests", "shutil", "tempfile"}, f"imports: {sorted(imported)}"
-    writers = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & {
+    # The bootstrap offer writes nothing. The board link's block (functions named `board_link*`, release 2.3.0) may write
+    # two files in the plugin's data folder and nothing else: see test_the_board_link_block_writes_only_in_the_data_folder.
+    rest = ast.Module(body=[n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name.startswith("board_link"))], type_ignores=[])
+    writers = {n.attr for n in ast.walk(rest) if isinstance(n, ast.Attribute)} & {
         "write_text", "write_bytes", "mkdir", "touch", "unlink", "rename", "replace", "open", "write_text", "chmod"}
-    opens = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open"]
+    opens = [n for n in ast.walk(rest) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open"]
     assert not writers and not opens, f"offer-bootstrap.py writes or opens: {sorted(writers)} {len(opens)}"
 
 
@@ -413,15 +416,27 @@ def test_the_wording_says_what_to_ask_and_how_to_stop():
     assert out.startswith("<bootstrap-offer>\n") and out.rstrip().endswith("</bootstrap-offer>"), out
 
 
+def hooks_readme_text(event: str, number: int) -> str:
+    """What describes a hook group: the last paragraph of its section in hooks/README.md. It was the group's `description` key in
+    hooks.json until Claude Code reported that key as unknown (15 Nov 2026); the documentation names no such key."""
+    text = (HOOKS_DIR / "README.md").read_text()
+    for block in re.split(r"(?m)^## ", text)[1:]:
+        heading, _, body = block.partition("\n")
+        if heading.split()[0] == f"{event}[{number}]":
+            return [p for p in body.strip("\n").split("\n\n") if p.strip()][-1]
+    raise AssertionError(f"hooks/README.md has no section for {event}[{number}]")
+
+
 def test_hooks_json_describes_the_new_offer():
     config = json.loads((HOOKS_DIR / "hooks.json").read_text())
-    entries = [group for group in config["hooks"]["SessionStart"] if "offer-bootstrap.py" in json.dumps(group)]
+    entries = [(n, group) for n, group in enumerate(config["hooks"]["SessionStart"]) if "offer-bootstrap.py" in json.dumps(group)]
     assert len(entries) == 1, "the offer hook is registered once on SessionStart"
-    description = entries[0]["description"]
+    number, entry = entries[0]
+    description = hooks_readme_text("SessionStart", number)
     assert "operating-model.md" in description, description[:200]
     assert "Orca" in description and "team structure" not in description, description[:300]
     assert "CLAUDE_CODE_SESSION_ATTENDED" in description and "sdk" in description, "the runs nobody attends are named: " + description[:300]
-    assert entries[0]["hooks"][0]["timeout"] <= 10, "a hook of every session start stays quick"
+    assert entry["hooks"][0]["timeout"] <= 10, "a hook of every session start stays quick"
 
 
 # ── the review of 15 Nov 2026 (REVIEW-2.2.0.md) ───────────────────────
@@ -546,6 +561,255 @@ def test_the_docs_say_what_the_hook_does():
     assert "every choice that is the owner's" in model
     doc = " ".join((ast.get_docstring(ast.parse(HOOK.read_text())) or "").split())
     assert "two calls" in doc and "2 s at most" in doc and "1 s" in doc, "the docstring names both calls that can wait"
+
+
+# ── release 2.3.0: the second block, the board link's one-time lines (OPTION-PLAN.md section 2 and 3) ───────────────
+PLUGIN_KEY = "project-init@claudecode-superinit"
+MARKER = "statusline-board-link.py"
+_fresh = [0]
+
+
+def fresh_data() -> Path:
+    """A plugin data folder that does not exist yet (the hook is given its path in CLAUDE_PLUGIN_DATA and creates it)."""
+    _fresh[0] += 1
+    return TMP / f"plugin-data-{_fresh[0]}"
+
+
+def with_board(repo: Path) -> Path:
+    """A board for this project: its folder under the status-board home, naming the project (repo.json)."""
+    board = SB_HOME / "boards" / repo.name.lower()
+    board.mkdir(parents=True, exist_ok=True)
+    (board / "repo.json").write_text(json.dumps({"repo": str(repo.resolve())}))
+    (board / "narrative.json").write_text(json.dumps({"headline": "x"}))
+    return board
+
+
+def link_env(data: Path | None, config: Path | None = None, **extra: str) -> dict:
+    env = {"CLAUDE_CONFIG_DIR": str(config or TMP / "config-none")}
+    if data is not None:
+        env["CLAUDE_PLUGIN_DATA"] = str(data)
+    env.update(extra)
+    return env
+
+
+def settings_for(config: Path, command: str | None, status_line_on: bool = True) -> None:
+    config.mkdir(parents=True, exist_ok=True)
+    body: dict = {"pluginConfigs": {PLUGIN_KEY: {"options": {"board_link_status_line": status_line_on}}}}
+    if command is not None:
+        body["statusLine"] = {"type": "command", "command": command}
+    (config / "settings.json").write_text(json.dumps(body))
+
+
+def wired_record(data: Path) -> None:
+    """What `statusline_setup.py record` and `add` leave: the owner's answer, and the old command kept (the status line was wired)."""
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "board-link.json").write_text(json.dumps({"v": 1, "answer": "status-line"}))
+    (data / "statusline-before.json").write_text(json.dumps({"v": 1, "command": "echo before", "after_command": "x " + MARKER}))
+
+
+def board_project(scaffold: str = "new") -> Path:
+    """A project that has an operating model (so the bootstrap's block says nothing) and a board."""
+    repo = project("shop-app", scaffold)
+    with_board(repo)
+    return repo
+
+
+def test_board_link_offer_is_made_once_to_the_owners_own_session_inside_or_outside_orca():
+    for orca in (False, True):
+        repo, data = board_project(), fresh_data()
+        result = run_hook(repo, orca=orca, env=link_env(data))
+        assert result.code == 0 and "<board-link-offer>" in result.out and result.out.rstrip().endswith("</board-link-offer>"), said(result)
+        for phrase in ("/project-init:board-link", "above the prompt", "status line", "do not raise it again", "the row above the prompt stays"):
+            assert phrase in result.out, f"missing {phrase!r} in:\n{result.out}"
+        assert result.out.count("<board-link-offer>") == 1 and not result.offered, "one block, and no bootstrap offer in a project that has its model"
+        assert (data / "board-link.offered").is_file(), "the marker that makes it once per user"
+        again = run_hook(repo, orca=orca, env=link_env(data))
+        assert again.silent, f"orca={orca}: the second session says nothing: {said(again)}"
+        other_project = board_project()
+        assert run_hook(other_project, orca=orca, env=link_env(data)).silent, "once per user, not once per project"
+
+
+def test_two_sessions_starting_together_give_the_board_link_offer_once():
+    repo, data = board_project(), fresh_data()
+    go = TMP / f"go-{time.time_ns()}"
+    wait = ("import os, subprocess, sys, time\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.005)\n"
+            "sys.exit(subprocess.run(sys.argv[2:], stdin=sys.stdin).returncode)\n")
+    environment = {"HOME": str(HOME), "PATH": str(FAKE_BIN), "STATUS_BOARD_HOME": str(SB_HOME), "PYTHONDONTWRITEBYTECODE": "1", **link_env(data)}
+    body = json.dumps({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup", "cwd": str(repo)})
+    procs = [subprocess.Popen([sys.executable, "-c", wait, str(go), sys.executable, "-B", str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=environment, cwd=str(TMP)) for _ in range(6)]
+    go.write_text("go")
+    outs = [p.communicate(body, timeout=60)[0] for p in procs]
+    assert sum(out.count("<board-link-offer>") for out in outs) == 1, [o[:40] for o in outs]
+
+
+def test_board_link_offer_is_silent_where_it_must_be_and_does_not_use_up_the_once():
+    repo = board_project()
+    data = fresh_data()
+    no_board = project("notes", "new")
+    plain = TMP / "not-a-project"
+    plain.mkdir(exist_ok=True)
+    cases = {
+        "a worker, by its first prompt": dict(cwd=repo, transcript=worker_transcript()),
+        "a worker, by a live dispatch": dict(cwd=repo, orca_mode="live"),
+        "an agent_type": dict(cwd=repo, payload={"agent_type": "reviewer"}),
+        "a teammate_name": dict(cwd=repo, payload={"teammate_name": "dev"}),
+        "a pane teammate's launch flags": dict(cwd=repo, ancestor_flags=("--agent-id=a1",)),
+        "claude -p (attended 0)": dict(cwd=repo, env=link_env(data, CLAUDE_CODE_SESSION_ATTENDED="0")),
+        "claude -p (sdk entrypoint)": dict(cwd=repo, env=link_env(data, CLAUDE_CODE_ENTRYPOINT="sdk-cli")),
+        "resume": dict(cwd=repo, source="resume"),
+        "compact": dict(cwd=repo, source="compact"),
+        "clear": dict(cwd=repo, source="clear"),
+        "a project without a board": dict(cwd=no_board),
+        "a folder that is not a project": dict(cwd=plain),
+        "PROJECT_INIT_NO_OFFER=1": dict(cwd=repo, env=link_env(data, PROJECT_INIT_NO_OFFER="1")),
+    }
+    for label, kwargs in cases.items():
+        kwargs = dict(kwargs)
+        kwargs["env"] = kwargs.get("env") or link_env(data)
+        cwd = kwargs.pop("cwd")
+        orca = kwargs.pop("orca", True)
+        result = run_hook(cwd, orca=orca, **kwargs)
+        assert "<board-link" not in result.out and result.code == 0 and not result.err, f"{label}: {said(result)}"
+        assert not (data / "board-link.offered").exists(), f"{label}: a session that is not the owner's used up the once"
+    unset = run_hook(repo, orca=False, env=link_env(None))
+    assert "<board-link-offer>" not in unset.out, "no CLAUDE_PLUGIN_DATA (older Claude Code): there is nowhere to keep the once, so nothing is said"
+    for answer in ("row", "status-line", "both", "declined"):
+        asked = fresh_data()
+        asked.mkdir()
+        (asked / "board-link.json").write_text(json.dumps({"v": 1, "answer": answer}))
+        assert run_hook(repo, orca=False, env=link_env(asked)).silent, f"after record ({answer}) it is never raised again"
+    assert "<board-link-offer>" in run_hook(repo, orca=False, env=link_env(data)).out, "and the silent sessions left the once for the owner"
+
+
+def test_the_board_link_block_writes_only_in_the_data_folder():
+    repo, data = board_project(), fresh_data()
+    config = TMP / "config-w"
+    settings_for(config, "echo hello")
+    def snapshot() -> dict:
+        return {str(p): (p.stat().st_mtime_ns, p.stat().st_size) for root in (TMP, PLUGIN / "hooks", PLUGIN / "status-board")
+                for p in root.rglob("*") if p.is_file() and "calls.log" not in p.name and ".git/" not in str(p)
+                and data not in p.parents and not p.name.startswith("transcript-")}
+    before = snapshot()
+    run_hook(repo, orca=False, env=link_env(data, config))
+    wired_record(data)
+    run_hook(repo, orca=False, env=link_env(data, config))
+    assert snapshot() == before, "nothing outside the plugin's data folder was written (settings.json, the board, the project, the plugin)"
+    made = {p.name for p in data.iterdir()} - {"board-link.json", "statusline-before.json"}  # the two the test wrote itself
+    assert "board-link.offered" in made and all(n == "board-link.offered" or n.startswith("board-link.rewrite-") for n in made), sorted(made)
+    assert not [p for p in data.rglob("*.tmp")], "a temporary file and a rename: none left behind"
+
+
+STATUS_LINE_LOST = "<board-link-statusline>"
+
+
+def test_the_statusline_line_when_the_command_no_longer_carries_the_link_once_per_change():
+    repo, data, config = board_project(), fresh_data(), TMP / "config-r"
+    wired_record(data)
+    settings_for(config, "echo hello")
+    first = run_hook(repo, orca=False, env=link_env(data, config))
+    assert STATUS_LINE_LOST in first.out and first.out.rstrip().endswith("</board-link-statusline>"), said(first)
+    for phrase in ("no longer carries the board's link", "above the prompt", "/project-init:board-link", "one sentence"):
+        assert phrase in first.out, f"missing {phrase!r}:\n{first.out}"
+    # Review of 15 Nov 2026, finding 2: "The link is back above the prompt" is true only with the row switch on; with it off the row
+    # comes back once the status line's last mark is ten minutes old. The line must be true in both cases, so it says both.
+    assert "is back above the prompt" not in first.out, f"an unconditional claim about the row:\n{first.out}"
+    assert "at once" in first.out and "ten minutes" in first.out and "row" in first.out, f"it says when the row comes back, for both settings of the row switch:\n{first.out}"
+    assert "<board-link-offer>" not in first.out, "the owner was asked already: only the one line"
+    assert run_hook(repo, orca=False, env=link_env(data, config)).silent, "once for this command"
+    settings_for(config, "echo another command")
+    assert STATUS_LINE_LOST in run_hook(repo, orca=False, env=link_env(data, config)).out, "a new rewrite is told again"
+    settings_for(config, None)
+    assert STATUS_LINE_LOST in run_hook(repo, orca=False, env=link_env(data, config)).out, "the status line removed altogether is a loss too"
+    assert run_hook(repo, orca=False, env=link_env(data, config)).silent
+    settings_for(config, f'w=${{COLUMNS:-}}; out=$(x); printf "%s" "$out" | python3 "$H/{MARKER}"')
+    assert run_hook(repo, orca=False, env=link_env(data, config)).silent, "the wrapper is there: nothing to say"
+
+
+def test_the_statusline_line_is_silent_unless_the_status_line_was_wired_and_the_switch_is_on():
+    repo, config = board_project(), TMP / "config-s"
+    settings_for(config, "echo hello")
+    unwired = fresh_data()
+    unwired.mkdir()
+    (unwired / "board-link.json").write_text(json.dumps({"v": 1, "answer": "status-line"}))  # asked for, never added: no statusline-before.json
+    assert run_hook(repo, orca=False, env=link_env(unwired, config)).silent, "never wired: the status line never carried the link"
+    switched_off = fresh_data()
+    wired_record(switched_off)
+    settings_for(config, "echo hello", status_line_on=False)
+    assert run_hook(repo, orca=False, env=link_env(switched_off, config)).silent, "the owner turned the switch off"
+    settings_for(config, "echo hello")
+    quiet = fresh_data()
+    wired_record(quiet)
+    for label, kwargs in {"a worker": dict(transcript=worker_transcript()), "an agent": dict(payload={"agent_id": "a"}), "resume": dict(source="resume"),
+                          "clear": dict(source="clear"), "claude -p": dict(env=link_env(quiet, config, CLAUDE_CODE_SESSION_ATTENDED="0"))}.items():
+        kwargs.setdefault("env", link_env(quiet, config))
+        assert run_hook(repo, orca=True, **kwargs).silent, f"{label}: {said(run_hook(repo, orca=True, **kwargs))}"
+    assert run_hook(no_board_project(), orca=False, env=link_env(quiet, config)).silent, "a project without a board"
+    wrecked = fresh_data()
+    wired_record(wrecked)
+    broken = TMP / "config-broken"
+    broken.mkdir(exist_ok=True)
+    (broken / "settings.json").write_text("{ not json")
+    result = run_hook(repo, orca=False, env=link_env(wrecked, broken))
+    assert result.silent, f"a settings.json that is not JSON: nothing said, no error: {said(result)}"
+
+
+def no_board_project() -> Path:
+    return project("notes", "new")
+
+
+def test_the_two_blocks_are_independent():
+    data = fresh_data()
+    bare = project("shop-app")  # no operating model
+    with_board(bare)
+    both = run_hook(bare, env=link_env(data))
+    assert both.out.index("<bootstrap-offer>") < both.out.index("<board-link-offer>"), f"the bootstrap's block first, then the board link's:\n{both.out}"
+    modeled = board_project()
+    only_link = run_hook(modeled, env=link_env(fresh_data()))
+    assert "<board-link-offer>" in only_link.out and "<bootstrap-offer>" not in only_link.out
+    opted_out = project("shop-app")
+    with_board(opted_out)
+    (opted_out / ".claude").mkdir(exist_ok=True)
+    (opted_out / ".claude" / "no-bootstrap-offer").write_text("")
+    mixed = run_hook(opted_out, env=link_env(fresh_data()))
+    assert "<bootstrap-offer>" not in mixed.out and "<board-link-offer>" in mixed.out, "the per-project file is about the bootstrap, not about the link"
+    off = run_hook(bare, env=link_env(fresh_data(), PROJECT_INIT_NO_OFFER="1"))
+    assert off.silent, "the variable that stops the offers stops both"
+
+
+def test_a_failure_of_the_board_link_block_never_costs_the_bootstrap_offer_or_the_session():
+    bare = project("shop-app")
+    with_board(bare)
+    blocker = TMP / "a-file-not-a-folder"
+    blocker.write_text("x")
+    for data in (blocker / "inside", TMP / "no-write" / "data"):  # a path under a file, and a folder nobody may write in
+        if data.parent.name == "no-write":
+            data.parent.mkdir(exist_ok=True)
+            data.parent.chmod(0o500)
+        try:
+            result = run_hook(bare, env=link_env(data))
+        finally:
+            if data.parent.name == "no-write":
+                data.parent.chmod(0o755)
+        assert result.code == 0 and not result.err and "Traceback" not in result.out, said(result)
+        assert result.offered, f"the bootstrap offer is still made when the data folder cannot be written: {said(result)}"
+    broken = TMP / "hooks-no-setup"
+    shutil.copytree(PLUGIN, broken, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+    (broken / "status-board" / "statusline_setup.py").write_text("def broken(:\n")
+    wired = fresh_data()
+    wired_record(wired)
+    config = TMP / "config-x2"
+    settings_for(config, "echo hello")
+    result = run_hook(bare, hooks_dir=broken / "hooks", env=link_env(wired, config))
+    assert result.code == 0 and not result.err and "Traceback" not in result.out and result.offered, said(result)
+
+
+def test_hooks_json_names_the_board_link_lines():
+    config = json.loads((HOOKS_DIR / "hooks.json").read_text())
+    number, entry = next((n, g) for n, g in enumerate(config["hooks"]["SessionStart"]) if "offer-bootstrap.py" in json.dumps(g))
+    description = hooks_readme_text("SessionStart", number)
+    assert "board-link-offer" in description and "board-link-statusline" in description, description[:200]
+    assert entry["hooks"][0]["timeout"] <= 10
 
 
 # ── runner ───────────────────────────────────────────────────────────
