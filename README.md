@@ -142,7 +142,12 @@ hook tell a different project's board on the same derived port (there are
 
 In a session of a project that has a board, a row above the prompt shows the
 board's short address, `http://localhost:8800/<name>`, as a link
-(`hooks/board-link.tsx`, with `status-board/board_link.py`). It is a mod,
+(`hooks/board-link.tsx`, with `status-board/board_link.py`), at the right end
+of the row, beside the `[-]` that Claude Code draws there. The row follows the
+width of the terminal, and a name too long for it is cut with an ellipsis and
+stays one row; the link keeps the full address. The row is the plugin's own:
+it leaves other mods' rows alone, including on Claude Code before 2.1.323,
+where all mods shared one drawing in the band. It is a mod,
 which needs Claude Code 2.1.287 or later; an older one ignores the file and
 every hook above still works. The link is a real OSC 8 hyperlink where the
 terminal supports them (iTerm2, Ghostty, WezTerm, kitty: command-click or
