@@ -57,7 +57,7 @@ STALE_AFTER_MIN = 240
 
 
 def slug_for(repo: Path) -> str:
-    # Must match serve.py, board-answers.py, arm-watcher.py exactly, or
+    # Must match serve.py, board-answers.py, answer-waiter.py exactly, or
     # this reads/writes a board that does not exist and silently does
     # nothing forever.
     return repo.name.lower().replace(" ", "-")

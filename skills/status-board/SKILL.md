@@ -13,19 +13,26 @@ description: Report to the owner on a live local web page instead of prose. Use 
 2. **Does the narrative still match what is true?** → Rewrite it and
    bump `writtenAt`. Every time, not when it feels stale.
 3. **Read `answers.json` — do not wait to be told.** The page records
-   every tap server-side the instant it happens, and **nothing notifies
-   you**. The page copies an answer to the owner's clipboard only when
+   every tap server-side the instant it happens and **notifies nobody
+   itself**: the plugin's hooks bring each answer to the session that keeps
+   the board (below), and you still read the file before you ask. The page
+   copies an answer to the owner's clipboard only when
    recording it fails, so there is nothing for them to paste, and from
    your side an answered question is indistinguishable from an ignored
    one.
 
+   If this session keeps the board, new answers reach you by themselves:
+   within seconds while you are idle, and at the latest with the owner's next
+   message, each once, inside a `<board-answers>` block. You do not need to poll. Before you ask the
+   owner anything, still read the file, because a ruling may predate this
+   session:
+
    ```bash
-   cat ~/.claude/status-board/boards/<slug>/answers.json
+   cat ~/.claude/status-board/boards/<slug>/answers.json 2>/dev/null || echo '{}'
    ```
 
-   Read it before you ask anything and before every reply. Asking again
-   for a decision the owner already made reads as not listening — and it
-   is, just to the wrong channel. (1 Aug 2026: a visual-direction ruling
+   Asking again for a decision the owner already made reads as not
+   listening — and it is, just to the wrong channel. (1 Aug 2026: a visual-direction ruling
    sat in `answers.json` for two minutes while the reply said the work
    was blocked on it; an earlier git ruling was re-asked twice for the
    same reason.)
@@ -201,6 +208,14 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/report.json
 `200` means it is already running — do not start another. `--port N`
 overrides if something else holds the port.
 
+**Give the owner the address by name, not the port.** Every board is also
+reachable at `http://localhost:8800/<slug>` (the slug is the repo folder's
+name, lower-cased, spaces as `-`), and `http://localhost:8800` lists every
+board and whether it is up. The server prints both lines when it starts;
+quote the first. The front door only redirects to the board's own port, so
+every check on the board is unchanged. If the banner says the address by
+name is not available, give the port address and the reason in one line.
+
 **Backgrounded, the URL it prints will not reach you — so derive the port
 from the server's own PID, never by process name:**
 
@@ -221,70 +236,114 @@ plugin's own directory is replaced wholesale on every update, and boards
 written there would be destroyed by an upgrade. `STATUS_BOARD_HOME`
 overrides the location.
 
-## Arm the answer watcher — once per session, before your first reply
+## Answers arrive by themselves — there is nothing to arm
 
-```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/status-board/watch-answers.py" "<absolute path to repo>"
+Two hooks of this plugin carry the owner's taps to you. You start neither.
+
+- **The waiter** (`hooks/answer-waiter.py`) starts in the background when a
+  session starts, when a prompt is submitted and after each of your turns.
+  It waits for a new answer and then wakes you, within seconds, with a
+  `<board-answers>` block. It needs no tool call from you.
+- **The prompt hook** (`hooks/board-answers.py`) gives you any answer the
+  waiter has not given yet, when the owner sends a message.
+
+Both mark what they told you in the same record, under one lock, so an
+answer comes once, whichever path carried it. Do not deduplicate by hand.
+
+**Only the session that keeps the board is told.** That is the session that
+last wrote `narrative.json`; the plugin records it from the write itself, and
+it stays yours through compaction, resume and `/restart`. Another session in
+the same folder hears nothing, except one `<board-keeper>` line, on the
+owner's next message, saying who keeps the board. To take the board over,
+write `narrative.json` with the Write or Edit tool, or with a command that
+names the file (a `>` redirect or a heredoc to it counts). A script that
+writes the file without naming it changes the board and is **not** recorded:
+the session that kept the board stays the keeper. If the session that keeps
+the board is closed, its answers go, within seconds, to an earlier writer
+still open, else to the Orca coordinator of the project, else to the session
+most recently in use. A worker, a split-pane teammate and a `claude -p` run
+are never told.
+
+The plugin finds the board from the folder your session was started in (Claude
+Code gives it to every hook as `CLAUDE_PROJECT_DIR`), not from where its shell is
+now, so a `cd` into a subfolder, out of the project or into a worktree changes
+nothing: start the session in the folder you gave `--repo`. A session started in a
+subfolder of a project that has no board of its own is the project's, and a session
+started outside its project that then `cd`s into it is the project's from there. A
+board of a subfolder that has no `repo.json` yet (made by an earlier version) tells
+nothing to a session started in that subfolder until its server has been started once.
+If the session that keeps the board is still open but has been idle for weeks
+(its waiter ends after 21 days) or was forgotten, an answer waits there. You are
+then told, once per answer and without the answer, in a `<board-keeper>` block
+that says it waits unheard: tell the owner in one line, do not act on it here.
+In a project whose folder name's board belongs to another project, a
+`<board-elsewhere>` block says so once and how to get a board of its own
+(rename the folder); a board whose project folder no longer exists is taken
+over by the project that opens it.
+
+**Nothing recovers an answer that was marked told and never reached you.**
+That can only happen if the session is restarted or closed in the same
+fraction of a second as the owner's tap. It is why you read `answers.json`
+before you ask the owner anything, and compare it with `answered` in
+`narrative.json`.
+
+Each answer arrives as **two lines — the question and the answer**, inside
+the block:
+
+```
+  Q: Which type pairing?
+  A: Set the whole Chinese line in VP Display SC   [2026-08-01T15:57:34+02:00]
 ```
 
-Run it with the **Monitor** tool, `persistent: true`. Every line it prints
-becomes a notification, so an answer reaches you seconds after the owner
-taps rather than waiting for their next message. `SessionStart` already
-tells you to do this; do it, and do not arm it twice.
+**Do not start a watcher of your own** — no Monitor, no `run_in_background`
+loop on `answers.json`. A monitor ends after 30 minutes at most and wakes
+you to re-arm it; any running background task makes `/restart` refuse; and
+it would deliver answers the hooks also deliver. If you see a
+`<board-watcher>` block saying the waiter has not run, tell the owner in one
+line and go on: answers still come, late, with their next message.
 
-**It prints one `WATCHER ARMED …` line immediately. If that line does not
-appear, the arm failed** — a wrong slug, a board that does not exist, an
-unreadable file. Do not read the silence that follows as a quiet board.
-Read it as a dead watcher. The script also exits 1 with a `WATCHER ERROR`
-line when it cannot read the file at startup, rather than sitting there
-watching nothing.
+A board nobody has tapped yet has no `answers.json`: it appears with the
+first tap. The waiter waits for it like for any other answer, and the first
+answer reaches you the same way.
 
-Each answer arrives as **two lines — the question and the answer**:
+### Why it is built this way, and the mistakes it encodes
 
-```
-BOARD ANSWER — Which type pairing?
-  → Set the whole Chinese line in VP Display SC   [2026-08-01T15:57:34+02:00]
-```
+The prompt hook alone made every tap wait for the owner's next message.
+That was diagnosed as **structural** — as a property of the system — and
+the diagnosis was wrong. It described the limit of one instrument and
+concluded it was the limit of the world (1 Aug 2026). **A notification you
+cannot act on is not a notification, it is a reminder to go and look:** the
+first fast path emitted the question alone, without the answer, and it
+looked like it was working because notifications arrived, promptly, naming
+the right question. It was caught by the owner reading the emitted line, not
+by any check that was run on it.
 
-That the answer is there at all is the second bug this mechanism had. The
-first version emitted the question alone, so every notification said *that*
-a decision had been made without saying *what* — leaving the agent to wait
-for the owner's next message to learn the content, which is precisely the
-latency the watcher exists to remove. It looked like it was working:
-notifications arrived, promptly, naming the right question. **A
-notification you cannot act on is not a notification, it is a reminder to
-go and look.** Caught by the owner reading the emitted line, not by any
-check that was run on it.
+That first fast path was a watcher the agent armed under the Monitor tool.
+It was an instruction, not a mechanism, and it decayed in three ways: the
+instruction named an option the Monitor tool does not have (a flag to make
+the monitor last for the session); a monitor ends after 30 minutes at most,
+so the session was woken every 30 minutes to re-arm it; and a running
+monitor is a background task, which made `/restart` refuse (13 and 14 Nov
+2026). The waiter is a hook with `asyncRewake`, so Claude Code starts it and
+it wakes the session on its own; a waiting hook is not a background task,
+and `/restart` goes through with one waiting. Nothing depends on you
+remembering. After a `/restart` the waiter from before it is deaf and claims
+nothing; the session's `SessionStart` starts a new one.
 
-### Why this exists, and the mistake it encodes
+The tell that mattered most is what made the first mistake worth writing
+down: **every check run on the hook passed.** It was registered, the plugin
+hook count rose, it fired on the next message. Not one of those checks could
+have detected the actual problem, and their agreement read as confirmation.
+That is exactly the `verification.md` rule — *a clean result from an
+instrument that cannot see the subject is not evidence, and re-running it
+does not make it evidence; change instrument, not effort* — failed by the
+person who wrote it.
 
-The `UserPromptSubmit` hook was already in place and working. It can only
-fire when the owner submits a prompt, so a tap waited for their next
-message. That was diagnosed as **structural** — as a property of the
-system — and the diagnosis was wrong. It described the limit of one
-instrument and concluded it was the limit of the world. A background
-command re-invokes the agent when it exits, and a monitor delivers each
-stdout line while the agent is idle. Both existed the whole time.
-
-The tell is what makes it worth writing down: **every check run on the hook
-passed.** It was registered, the plugin hook count rose, it fired on the
-next message. Not one of those checks could have detected the actual
-problem, and their agreement read as confirmation. That is exactly the
-`verification.md` rule — *a clean result from an instrument that cannot see
-the subject is not evidence, and re-running it does not make it evidence;
-change instrument, not effort* — failed by the person who wrote it.
-
-**Keep both mechanisms.** They fail differently: the hook is durable
-(plugin config, every session) and slow; the watcher is fast and dies with
-the session that armed it. Neither is redundant while the other can be
-dead. If both report the same answer, deduplicate against what is already
-in `narrative.json` — ground truth — rather than against a flag file.
-
-And be honest about the tier: `board-answers.py` is a *mechanism*, it runs
-whether or not you remember anything. The watcher is one step weaker,
-because arming a monitor needs a tool call and a hook cannot make one. The
-`SessionStart` hook makes the instruction arrive reliably; it cannot make
-you follow it.
+**When a tool changes under this plugin, the test suite is the first to
+know:** `tests/test_answer_waiter.py` checks that no text this plugin gives
+you names a tool option, and that the waiter's hook entry keeps `async`,
+`asyncRewake` and `timeout`. The `<board-watcher>` line is the second: it
+appears in the session the first time the waiter fails to run.
 
 ## The two halves — this is the whole design
 
@@ -440,7 +499,11 @@ The machine half needs nothing. The judgement half is on you:
 
 - **Rewrite `narrative.json` before you reply to the owner.** Every time.
   A board that lags the conversation is worse than no board, because it
-  looks authoritative.
+  looks authoritative. **Write it with the Write or Edit tool, or with a
+  command that names `narrative.json`** (`cat > …/narrative.json <<'EOF'`): that
+  is how the plugin sees that this session keeps the board, so that the owner's
+  answers come to it. A script that builds the path itself changes the board
+  and records nobody.
 - **And rewrite it on every event, not only before a reply.** This is the
   rule that gets missed, because the first one *feels* sufficient. It is
   not, and the reason is structural: writing the board is triggered by
@@ -764,7 +827,7 @@ needs confirming before you act, so **omitting one costs the owner a
 round trip.** Withholding a recommendation you actually hold is the
 expensive kind of politeness.
 
-An answer always travels with its question. The watcher and the hook
+An answer always travels with its question. The waiter and the hook
 hand you the two together, and if recording ever fails the page copies
 **the project name, the question and the chosen answer** to the owner's
 clipboard as two lines, so the answer is not lost:
@@ -958,7 +1021,7 @@ it.
   JSON, that a browser says comes from another site, whose `Origin` is
   not the board's own, or that reaches this machine under a name that is
   not its own. Before 13 Nov 2026 any page open in the same browser could
-  post an answer to the board's port, and the hook and the watcher would
+  post an answer to the board's port, and the hook and the waiter would
   have handed it to you as the owner's ruling. A plain client such as
   `curl` still works when it sends `Content-Type: application/json`.
 - **The board is read only under this machine's own names:**
@@ -972,7 +1035,9 @@ it.
   environment, read once when the server starts. Put it in the `env`
   block of `~/.claude/settings.json`, so a board that a hook starts
   again has it too. Use `http://127.0.0.1:<port>` in anything you run
-  yourself, `curl` included.
+  yourself, `curl` included. Give the owner `http://localhost:8800/<slug>`.
+  The front door at 8800 answers under the same names and no other:
+  `<slug>.localhost` is refused like any foreign name.
 - **A shot is a picture, never a page.** Every file under `shots/` is
   served sandboxed, so an SVG opened in its own tab runs no script and
   can neither read the board nor record an answer. Do not rely on that

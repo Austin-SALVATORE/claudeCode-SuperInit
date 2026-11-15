@@ -8,7 +8,8 @@ command. This starts the board again at session start, so the URL in the
 owner's browser works without anyone being asked.
 
 What it does, in order:
-  1. The project has a board — boards/<slug>/narrative.json exists — or stop.
+  1. The project has a board — boards/<slug>/narrative.json exists — or stop. The
+     project is the folder the session was started in, found as every hook finds it.
   2. Probe the board's port (the one serve.py itself derives):
        the board page answers  -> do nothing;
        something else answers  -> start nothing, print one line saying so;
@@ -92,30 +93,20 @@ def load_serve():
     return module
 
 
-def git_toplevel(start: Path) -> Path | None:
-    for d in (start, *start.parents):
-        if (d / ".git").exists():
-            return d
-    return None
+def find_board(cwd: Path):
+    """(repo, slug, board_dir) for the board of this session's project, else None.
 
+    The same function the other hooks use (`answer_ledger.find_board`, KEEPER-BUILD.md section 14): the project is the
+    folder the session was started in (`CLAUDE_PROJECT_DIR`), `cwd` only when that is missing, so that the board this
+    starts again is the board whose answers this session is told. Its own walk (the git top level first) took a
+    sub-project's session to the root's board (15 Nov 2026). `answer_ledger` is the sibling that serve.py sits beside,
+    on the path since `load_serve`, and reads the same STATUS_BOARD_HOME."""
+    import answer_ledger
 
-def find_board(serve, cwd: Path, home: Path):
-    """(repo, slug, board_dir) for the first root that has a board, else None.
-
-    The git top-level goes first: the board was started for the repo root, and
-    a subfolder called `app` or `api` must not claim another project's board
-    that happens to share its name."""
-    roots = []
-    top = git_toplevel(cwd)
-    if top is not None and top not in (home, Path(top.anchor)):
-        roots.append(top)
-    roots.append(cwd)
-    for root in dict.fromkeys(roots):
-        slug = serve.slug_for(root)
-        board_dir = Path(serve.STATE) / "boards" / slug
-        if (board_dir / "narrative.json").is_file():
-            return root, slug, board_dir
-    return None
+    board, folder, _ = answer_ledger.find_board(cwd)
+    if board is None or not (board / "narrative.json").is_file():
+        return None
+    return folder, board.name, board
 
 
 def probe(port: int) -> str:
@@ -158,6 +149,21 @@ def take_lock(lock: Path) -> bool:
     return False
 
 
+def address_by_name(slug: str, state: Path | None = None) -> str | None:
+    """`http://localhost:8800/<slug>` when the front door answers (front_door.py),
+    else None, and the line is the one it always was. Asked only after the board
+    itself answers: by then its server has had its first try at holding the
+    door's port (serve.py waits for it before it serves), so a board that took
+    the door is not reported as having none. `front_door` is the sibling that
+    serve.py imports, on the path since `load_serve`."""
+    try:
+        import front_door
+
+        return front_door.address_for(slug, state=state)
+    except Exception:
+        return None
+
+
 def start(serve, repo: Path, slug: str, port: int, board_dir: Path) -> str:
     """Launch serve.py detached; return the one line to print."""
     log_path = board_dir / "serve.log"
@@ -195,6 +201,12 @@ def start(serve, repo: Path, slug: str, port: int, board_dir: Path) -> str:
                 f"(code {proc.returncode}); see {log_path}"
             )
         if probe(port) == "board":
+            by_name = address_by_name(slug, Path(serve.STATE))
+            if by_name:
+                return (
+                    f'project-init: status board "{slug}" was not running; '
+                    f"started it again: {by_name} (by port: http://{HOST}:{port})"
+                )
             return (
                 f'project-init: status board "{slug}" was not running; '
                 f"started it again: http://{HOST}:{port}"
@@ -211,17 +223,21 @@ def main() -> int:
     raw = payload.get("cwd")
     if not isinstance(raw, str) or not raw:
         return 0
-    cwd, home = Path(raw).resolve(), Path.home().resolve()
+    cwd = Path(raw).resolve()
     if not cwd.is_dir():
         return 0
     try:
         serve = load_serve()
     except Exception:
         return 0
-    found = find_board(serve, cwd, home)
+    found = find_board(cwd)
     if found is None:
         return 0
     repo, slug, board_dir = found
+    problem = getattr(serve, "front_port_problem", lambda: None)()
+    if problem:  # serve.py would refuse to start (the re-check of 14 Nov 2026, finding 4): say why, start nothing
+        print(f'project-init: status board "{slug}" not started: {problem}')
+        return 0
     port = serve.port_for(repo)
 
     state = probe(port)

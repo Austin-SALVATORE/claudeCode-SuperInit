@@ -29,6 +29,15 @@ Then, in any project:
 Running `/init` on a repository with no `.claude/` triggers the same
 thing.
 
+**After an update: start each running board's server again, once.** A board
+made by an earlier version has no `repo.json` (the record, written when the
+server starts, of which folder the board belongs to). The plugin finds a
+session's board from the folder the session was started in, and a board of a
+subfolder of a project (not the top of a repository) that has no record is not
+guessed from its name: a session started there is told nothing until the
+board's server has been started once on this version. A board whose project
+is the top of its repository is found without the record.
+
 ## At session start
 
 Two `SessionStart` hooks remove the manual setup a fresh session used to
@@ -115,8 +124,8 @@ a worker's (`hooks/orca_session.py`):
 
 - the bootstrap offer, which arrived ahead of the task the worker was
   dispatched for, in a worktree that is one task's checkout;
-- the instruction to arm the answer watcher: there is one watcher per
-  board, and a worker that armed it took it from the coordinator;
+- the answer waiter, which woke the worker with your answers and marked
+  them told, hiding them from the coordinator;
 - the answer hook, which printed your answers into the worker's context
   and marked them surfaced, hiding them from the coordinator.
 
@@ -194,6 +203,33 @@ The server is read-only against your repository and binds to
 `127.0.0.1` only. It exposes repo paths, branch names and commit
 subjects; do not bind it to anything else.
 
+Each board has its own port, derived from the project's path, which is
+the right thing for the board and hard for a person to keep in mind. So
+one address is fixed: `http://localhost:8800` lists every board and says
+whether it is up, and `http://localhost:8800/<name>` (the project's
+folder name, in any case, or the start of it when that is unique) sends
+the browser on to that project's own board. Nothing is installed or
+started for it: every board server tries to hold port 8800, whichever
+holds it serves the list, and when that board stops another takes over
+within five seconds. It only redirects, never proxies, so each board
+keeps its own origin and its own checks, and it listens on `127.0.0.1`
+only. A board that is down says so, with the command that starts it. A
+board gets its name once its server has been started again on this
+version; until then its port address works as before. The port is
+`STATUS_BOARD_FRONT_PORT`; boards in a home set by `STATUS_BOARD_HOME`
+take part only when it is given. A board announces the address by name
+only when whatever holds the port proves that it is this home's front
+door (it answers a fresh challenge with a secret kept in
+`servers/front.key`, readable by your account only); otherwise it gives
+the port address and says that the port is held by something that is not
+a board. `/<name>` goes only to a port where a `serve.py` of yours
+listens; the door looks that up in one background check (at most once a
+second while a board is new to it, once a minute otherwise), never in the
+request itself, so a list of twenty boards answers at once, and a board it
+has not looked at yet says "not checked yet". A port set in
+`STATUS_BOARD_FRONT_PORT` inside 8801 to 8920, where the boards take their
+own, is refused when a server starts, with one line saying so.
+
 It writes three small files of its own, and only when its own page asks:
 a write must be sent as JSON, from the board's own origin, to this
 machine under its own name. Any other page open in your browser is
@@ -257,9 +293,10 @@ why.
 Answers you tap reach the agent two ways, kept deliberately redundant
 because they fail differently. A `UserPromptSubmit` hook surfaces them
 whenever you send a message — durable, since it is plugin config, but it
-cannot fire until you speak. A watcher armed under the agent's Monitor
-tool emits each answer within seconds of the tap — fast, but it dies with
-the session.
+cannot fire until you speak. A second hook waits in the background after
+each of the agent's turns and wakes the session within seconds of a tap.
+It needs nothing from the agent and ends with the session. Both read and
+mark the same record, so an answer is told once.
 
 ### The one field that could lie without aging
 

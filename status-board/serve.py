@@ -48,6 +48,16 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+
+# The board's server with a queue of 128 waiting connections, not the standard 5 (15 Nov 2026, P2-FLAKE.md): with 5,
+# a burst of 8 connections at one instant (a script, many tabs) could be reset by the kernel before the server saw
+# them (macOS: ECONNRESET, EPIPE, or EINVAL from setsockopt), and the owner's tap would show "NOT recorded". Nothing
+# the server had accepted was ever lost. Shadows the imported name, here and not at the places the server is made,
+# so that this is one hunk that no other change to `main` has to share.
+class ThreadingHTTPServer(ThreadingHTTPServer):  # noqa: F811
+    request_queue_size = 128
+
+
 # Sibling module in this same directory, not a standalone script invoked
 # from elsewhere — unlike the hooks/ scripts, which duplicate this file's
 # helpers rather than import them because they run from a different
@@ -61,6 +71,12 @@ import tree_lock
 # file only for `slug_for` and `port_for`.
 import orca_crew
 import workstreams
+
+# The front door (front_door.py): one fixed port that lists every board and
+# redirects /<name> to the board's own port. Imported here for the one number
+# `port_for` has to keep clear of; the door itself is started in `__main__`.
+# It does not import this file back, it is handed it (`FrontDoor(serve)`).
+import front_door
 
 HERE = Path(__file__).resolve().parent
 PORT_BASE, PORT_SPAN = 8800, 120
@@ -98,7 +114,33 @@ def slug_for(repo: Path) -> str:
 def port_for(repo: Path) -> int:
     # crc32, not hash(): hash() is salted per process and would move the port
     # on every restart. The whole point is that the URL is stable.
-    return PORT_BASE + zlib.crc32(str(repo).encode()) % PORT_SPAN
+    port = PORT_BASE + zlib.crc32(str(repo).encode()) % PORT_SPAN
+    # The base port is the front door's (14 Nov 2026, the owner's choice,
+    # http://localhost:8800): a board on it would hold the address that lists
+    # all the others. One path in 120 hashes there; it gets the first port past
+    # the span instead, and its address by name does not change. Always 8800,
+    # whatever STATUS_BOARD_FRONT_PORT says (the review, finding 4): a process
+    # with the variable set must give a project the same port as one without,
+    # or a hook and the server it revives would disagree. Nothing else is
+    # skipped, so a door port configured inside the span would be taken by a
+    # board: `front_port_problem` refuses such a configuration at start (the
+    # re-check of 14 Nov 2026, finding 4), and the answer here never depends
+    # on the environment.
+    if port == PORT_BASE:
+        port = PORT_BASE + PORT_SPAN
+    return port
+
+
+def front_port_problem(port: int | None = None) -> str | None:
+    """One line saying why this front door port cannot be used, or None. Boards take their own ports from
+    PORT_BASE+1 to PORT_BASE+PORT_SPAN (the last is where the path that hashed to the base one goes); a door there
+    would collide with a board, and `port_for` would have to dodge it differently in every process."""
+    port = front_door.FRONT_PORT if port is None else port
+    low, high = PORT_BASE + 1, PORT_BASE + PORT_SPAN
+    if low <= port <= high:
+        return (f"{front_door.FRONT_ENV}={port} is inside {low} to {high}, where the boards take their own ports; "
+                f"the front door needs a port outside it (the default is {PORT_BASE}). Unset it or choose another.")
+    return None
 
 
 class Board:
@@ -108,6 +150,61 @@ class Board:
         self.name = name or repo.name
         self.dir = STATE / "boards" / self.slug
         self.dir.mkdir(parents=True, exist_ok=True)
+        # Which project this board folder belongs to (14 Nov 2026). The folder
+        # is named after the project's folder, so two projects with one folder
+        # name share it, an old defect that stays as it is. Written once, only
+        # if missing; the plugin's hooks stay silent in any other project (the
+        # review of the answer waiter, finding 1). Nothing is moved or refused:
+        # a second project is told in one line and starts as before.
+        # Two starts at once end with one owner: the first to link its record
+        # into place wins and the other reads it (the review of the keeper,
+        # finding 1). And a record that names a folder that no longer exists
+        # (the project was moved) is taken over by the project that starts now,
+        # and the line says so.
+        repo_file = self.dir / "repo.json"
+
+        def recorded_owner() -> str | None:
+            try:
+                found = json.loads(repo_file.read_text()).get("repo")
+            except (OSError, ValueError, AttributeError):
+                return None
+            return found if isinstance(found, str) else None
+
+        def write_record(replace: bool) -> bool:
+            # The record is written whole beside the file, then put in place: a reader never sees half of it.
+            # To create, `link` is the atomic step, and it fails if the file exists: the first writer wins.
+            tmp = self.dir / f"repo.json.{os.getpid()}.tmp"
+            try:
+                tmp.write_text(json.dumps({"repo": str(repo)}))
+                if replace:
+                    tmp.replace(repo_file)
+                else:
+                    try:
+                        os.link(tmp, repo_file)
+                    except FileExistsError:
+                        return False
+                    except OSError:  # a filesystem without hard links: create it exclusively and write at once
+                        with open(repo_file, "x") as fh:
+                            fh.write(json.dumps({"repo": str(repo)}))
+                return True
+            except OSError:
+                return False
+            finally:
+                tmp.unlink(missing_ok=True)
+
+        owner = recorded_owner()
+        if owner is None and not repo_file.exists():
+            if not write_record(replace=False):
+                owner = recorded_owner()  # lost the race: the winner's record
+        elif isinstance(owner, str) and Path(owner) != repo and not Path(owner).exists():
+            if write_record(replace=True):
+                print(f"This board belonged to {owner}, which no longer exists; it now belongs to {repo}.")
+                owner = None
+        if isinstance(owner, str) and Path(owner) != repo:
+            print(
+                f"This board folder already belongs to {owner}; two projects named {self.slug} share it. "
+                "Rename one folder to give each its own board."
+            )
         self.narrative = self.dir / "narrative.json"
         # Two files, two authors. The owner writes backlog.json from the page;
         # Claude writes narrative.json. Keeping them apart means a narrative
@@ -1424,6 +1521,12 @@ if __name__ == "__main__":
     )
     args = ap.parse_args()
 
+    # A door port inside the boards' own range is refused before anything is bound or written (the re-check, finding 4).
+    problem = front_port_problem()
+    if problem:
+        print(problem)
+        sys.exit(2)
+
     repo = Path(args.repo).expanduser().resolve()
     board = Board(repo, args.name)
     port = args.port or port_for(repo)
@@ -1466,6 +1569,24 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+    # Bound before anything is said or written about it: a board whose port is
+    # taken used to print its banner and then fail, and with the record below it
+    # would also have claimed an address it never held.
+    httpd = ThreadingHTTPServer((args.host, port), handler)
+
+    # The front door (front_door.py). This server says where it is (a record the
+    # door reads on every request) and, if it takes part, tries to hold the
+    # door's port for as long as it lives. 0.5 s for the first try, so that the
+    # banner can say whether the address by name works without guessing.
+    door = front_door.FrontDoor(sys.modules[__name__])
+    door.write_record(board, port, args.host)
+    door_state = None
+    if front_door.election_enabled(STATE):
+        holding = threading.Event()
+        threading.Thread(target=door.keep_trying, args=(threading.Event(), holding), daemon=True).start()
+        holding.wait(0.5)
+        door_state = "door" if holding.is_set() else front_door.probe_state(state=STATE)
+    name_lines = front_door.banner_lines(board.name, board.slug, port, door_state, shown) if door_state else None
     if token:
         ip = lan_ip() if args.host == "0.0.0.0" else args.host
         print(f"{board.name} board → http://{ip}:{port}/?k={token}")
@@ -1473,7 +1594,11 @@ if __name__ == "__main__":
         print("  ! plaintext HTTP, and the token is in the URL. Do not use on")
         print("    a network you do not control.")
         print(f"  token stored at: {STATE / 'lan-token'}")
+        if name_lines:  # on this machine only: the front door is loopback
+            print("  on this machine: " + name_lines[0].split(" → ", 1)[1] + "  " + name_lines[1].strip())
+    elif name_lines:
+        print("\n".join(name_lines))
     else:
         print(f"{board.name} board → http://{shown}:{port}")
     print(f"  narrative: {board.narrative}", flush=True)
-    ThreadingHTTPServer((args.host, port), handler).serve_forever()
+    httpd.serve_forever()

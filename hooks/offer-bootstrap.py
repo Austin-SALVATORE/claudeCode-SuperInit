@@ -5,8 +5,8 @@ Before this, a fresh session in a new folder never suggested the bootstrap, so
 the working practice this plugin exists to provide arrived only if the owner
 remembered to ask for it.
 
-Like arm-watcher.py this is an instruction, not a mechanism: a hook cannot run
-a skill, only tell the agent to offer one. What the instruction insists on is
+This is an instruction, not a mechanism: a hook cannot run a skill, only tell
+the agent to offer one. What the instruction insists on is
 the order — ask what the project is and who works on it, get a yes, only then
 scaffold — because a rule nobody follows is worse than no rule
 (project-bootstrap/SKILL.md says the same of adapting the templates).
@@ -29,7 +29,7 @@ Telling a teammate apart (looked into 31 Oct 2026, Claude Code 2.1.309-2.1.316):
     PreToolUse records and no SessionStart, while the lead's holds eleven. The
     docs run in-process teammates inside the lead's own process.
   * A split-pane teammate is a separate Claude Code process, and SessionStart
-    does fire in it — this plugin's own arm-watcher.py ran in one, at
+    does fire in it — this plugin's own answer-waiter.py runs in one, at
     `SessionStart:startup`. The documented payload has no teammate field, but
     `agent_type` is present when a session is started with an agent, and all six
     pane teammates examined were (each transcript opens with an `agent-setting`
@@ -71,8 +71,7 @@ OFFER_ON = {"startup", "clear"}
 # Keys that identify an agent in hook payloads, never the owner's own session.
 AGENT_KEYS = ("agent_type", "agent_id", "teammate_name", "team_name")
 
-# On the command line of every split-pane teammate Claude Code launches.
-TEAMMATE_FLAGS = ("--agent-id", "--parent-session-id")
+# The flags on the command line of every split-pane teammate: orca_session.TEAMMATE_FLAGS.
 
 
 def read_payload() -> dict:
@@ -126,28 +125,19 @@ def project_roots(cwd: Path, home: Path) -> list[Path]:
 
 
 def teammate_launched(limit: int = 8) -> bool:
-    """True when an ancestor process was started with a teammate flag."""
+    """True when an ancestor process was started with a teammate flag. The walk
+    is `orca_session.teammate_parent` (moved there on 14 Nov 2026: the answer
+    keeper needs the lead's session id from the same flags)."""
     try:
-        out = subprocess.run(
-            ["ps", "-axww", "-o", "pid=,ppid=,command="],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
+        sys.dont_write_bytecode = True  # never write into the plugin directory
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import orca_session
+
+        return orca_session.teammate_parent(limit) is not None
+    except Exception:
         return False
-    table: dict[int, tuple[int, list[str]]] = {}
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-            table[int(parts[0])] = (int(parts[1]), parts[2].split() if len(parts) > 2 else [])
-    pid, seen = os.getppid(), 0
-    while pid > 1 and pid in table and seen < limit:
-        ppid, argv = table[pid]
-        if any(t == f or t.startswith(f + "=") for t in argv for f in TEAMMATE_FLAGS):
-            return True
-        pid, seen = ppid, seen + 1
-    return False
 
 
 def agent_session(payload: dict) -> bool:
