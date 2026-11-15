@@ -1,6 +1,6 @@
 {
   "name": "project-init",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Scaffold how a project is run under Orca and oh-my-claudecode (the operating model, the worker roster, the workstream register, the worker brief) and report to the owner on a live status board.",
   "author": {
     "name": "Austin Salvatore"

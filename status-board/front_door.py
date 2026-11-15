@@ -568,6 +568,19 @@ STYLE = (
 E = html.escape  # every value that is printed goes through this: names and paths are other people's text
 
 
+def public_row(row: dict, slug_of) -> dict:
+    """What the door says about a board over the socket: its name, its port, whether it is up, when it started, and for a worktree
+    the NAME of the project it is a worktree of. Never a path: not the project's, not the main checkout's. The rows keep their
+    paths inside the process (`resolve`, the election, board_link.py use them); only what leaves is made here, and every response
+    that carries a row goes through this or prints the same fields (`render_list`, `clash_page`, `down_page`)."""
+    main = row.get("main_repo")
+    return {
+        "slug": row["slug"], "name": row["name"], "port": row["port"], "host": row.get("host"), "started": row["started"],
+        "up": bool(row["up"]), "known": bool(row["known"]), "foreign": bool(row.get("foreign")),
+        "unchecked": bool(row.get("unchecked")), "worktree_of": slug_of(Path(main)) if main else None,
+    }
+
+
 def page(title: str, body: str) -> str:
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -579,7 +592,7 @@ def render_list(rows: list[dict], slug_of) -> str:
     if not rows:
         return "<p>No board is known yet. A board appears here when its server starts.</p>"
     out = [
-        "<table><tr><th>Board</th><th>Address by name</th><th></th><th>By port</th><th>Project</th><th>Started</th></tr>"
+        "<table><tr><th>Board</th><th>Address by name</th><th></th><th>By port</th><th>Note</th><th>Started</th></tr>"
     ]
     for r in rows:
         shown = E(r["name"]) + (f" <code>{E(r['slug'])}</code>" if r["name"] != r["slug"] else "")
@@ -589,9 +602,7 @@ def render_list(rows: list[dict], slug_of) -> str:
                 "<td class=\"down\">address not known yet</td><td></td><td></td><td></td></tr>"
             )
             continue
-        note = ""
-        if r.get("main_repo"):
-            note = f"<br>worktree of {E(slug_of(Path(r['main_repo'])))}"
+        note = f"worktree of {E(slug_of(Path(r['main_repo'])))}" if r.get("main_repo") else ""  # a name, never the folder
         status = ('<span class="up">up</span>' if r["up"] else
                   '<span class="down">the port is held by something that is not a board</span>' if r.get("foreign") else
                   '<span class="down">not checked yet</span>' if r.get("unchecked") else
@@ -603,7 +614,7 @@ def render_list(rows: list[dict], slug_of) -> str:
         link = f"<a href=\"/{E(quote(r['slug']))}\">{E(name_address(r['slug']))}</a>"
         out.append(
             f"<tr><td>{shown}</td><td>{link}</td><td>{status}</td><td>{by_port}</td>"
-            f"<td><code>{E(r['repo'])}</code>{note}</td><td>{E(r['started'])}</td></tr>"
+            f"<td>{note}</td><td>{E(r['started'])}</td></tr>"
         )
     out.append("</table>")
     return "".join(out)
@@ -868,7 +879,7 @@ class FrontDoor:
                     if key:
                         proof = {"service": SERVICE, "v": 1, "front_port": port, "proof": proof_for(key, challenge, port)}
                         return self.send(200, json.dumps(proof), "application/json")
-                    rows = [{k: v for k, v in r.items() if k != "pid"} for r in door.rows()]
+                    rows = [public_row(r, serve.slug_for) for r in door.rows()]  # names, ports, state: never a path or a pid
                     return self.send(200, json.dumps({"service": SERVICE, "v": 1, "front_port": port, "boards": rows}),
                                      "application/json")
                 name = path[:-1] if path.endswith("/") else path
@@ -903,18 +914,26 @@ class FrontDoor:
             return page("Not reachable", (
                 f"<p><strong>{slug} is not reachable.</strong> Its record names port {int(row['port'])}, and what listens "
                 "there is not a board of this machine's: the port is held by something that is not a board.</p>"))
-        command = f'python3 "{Path(self.serve.HERE) / "serve.py"}" --repo "{row["repo"]}" &'
+        # No folder and no install path in the page (2.3.1): the project by name, and the command with a placeholder for each
+        command = 'python3 "<the plugin\'s status-board folder>/serve.py" --repo "<the project\'s folder>" &'
         return page("Not running", (
-            f"<p><strong>{slug} is not running.</strong> It starts with the next Claude Code session in "
-            f"<code>{E(row['repo'])}</code>, or now with:</p><p><code>{E(command)}</code></p>"))
+            f"<p><strong>{slug} is not running.</strong> It starts with the next Claude Code session in that project "
+            f"({E(row['name'])}), or now, from a terminal, with:</p><p><code>{E(command)}</code></p>"
+            "<p>Put the project's folder and the plugin's status-board folder where the two names in angle brackets stand; "
+            "the front door does not say where they are.</p>"))
 
     def clash_page(self, rows: list[dict]) -> str:
+        slug_of = self.serve.slug_for
         items = "".join(
-            f"<li><code>{E(r['repo'])}</code> &mdash; "
+            f"<li><strong>{E(r['name'])}</strong> &mdash; "
+            + (f"worktree of {E(slug_of(Path(r['main_repo'])))}" if r.get("main_repo") else "not a worktree")
+            + f", started {E(r['started'])} &mdash; "
             + (f"<a href=\"http://{FRONT_HOST}:{int(r['port'])}/\">{FRONT_HOST}:{int(r['port'])}</a>" if r["up"] else
                f"not running (was on {int(r['port'])})") + "</li>"
             for r in rows
         )
         return page("Two projects, one name", (
             f"<h1>More than one project is called <code>{E(rows[0]['slug'])}</code></h1><ul>{items}</ul>"
-            "<p>These projects share one board folder; give one a different folder name.</p>"))
+            "<p>These projects share one board folder; give one a different folder name. They are told apart here by their "
+            "ports, their start times and whether they are a worktree: the front door does not show folders, and a board "
+            "that is running names its project on its own page.</p>"))

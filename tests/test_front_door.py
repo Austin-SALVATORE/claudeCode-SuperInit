@@ -26,6 +26,7 @@ Exit code: 0 when every test passes, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import html
 import http.client
 import importlib
 import inspect
@@ -52,7 +53,10 @@ from types import SimpleNamespace
 ap = argparse.ArgumentParser()
 ap.add_argument("--plugin", required=True, help="the plugin directory under test")
 ap.add_argument("--only", default="", help="run only the tests whose name contains this")
+ap.add_argument("--old-plugin", default="", help="the plugin directory of the release before (2.3.0), for the tests that put its door "
+                "and the new one side by side; without it those tests are reported as not run, never as passed")
 ARGS = ap.parse_args()
+OLD_PLUGIN = Path(ARGS.old_plugin).resolve() if ARGS.old_plugin else None
 PLUGIN = Path(ARGS.plugin).resolve()
 BOARD_DIR, HOOKS_DIR = PLUGIN / "status-board", PLUGIN / "hooks"
 SERVE_PY, REVIVE_PY = BOARD_DIR / "serve.py", HOOKS_DIR / "revive-board.py"
@@ -65,6 +69,10 @@ FAKE_HOME = TMP / "fakehome"
 HOME = TMP / "home"  # the STATUS_BOARD_HOME of this process and of every server started here
 PROCESSES: list[subprocess.Popen] = []
 SOCKETS: list[socket.socket] = []
+
+
+class NotRun(Exception):
+    """A test that could not run here (it needs the old release): said by name, and never counted as passed."""
 
 
 def safe_port(port: int) -> bool:
@@ -165,11 +173,12 @@ class World:
 class Door:
     """A FrontDoor of the plugin under test, serving over a free port in this process."""
 
-    def __init__(self, world: World, *, port: int | None = None, real_check: bool = False, state: Path | None = None):
-        fd = FD()
+    def __init__(self, world: World, *, port: int | None = None, real_check: bool = False, state: Path | None = None,
+                 module=None, verify=None):
+        fd = module or FD()
         kwargs = {}
         if not real_check and "verify" in inspect.signature(fd.FrontDoor.__init__).parameters:
-            kwargs["verify"] = lambda row: True  # these records are sockets of the test, not serve.py processes
+            kwargs["verify"] = verify or (lambda row: True)  # these records are sockets of the test, not serve.py processes
         self.door = fd.FrontDoor(SERVE(), state=state or world.state, **kwargs)
         self.port = port or free_port()
         # The door's own server class when it has one (a listen queue that holds a burst), else the standard one.
@@ -307,7 +316,11 @@ def test_board_down_gives_503_with_start_command_and_no_redirect():
         status, headers, body = door.request("/sleepy")
         assert status == 503 and "location" not in headers, (status, headers)
         assert "sleepy is not running" in body.lower().replace("<strong>", "").replace("</strong>", ""), body
-        assert "serve.py" in body and f'--repo "{repo}"' in body.replace("&quot;", '"'), body
+        # No path (the paths fix, 2.3.1): the project by name, how its board starts, a placeholder for the folder
+        text = html.unescape(body)
+        assert "serve.py" in text and "--repo" in text and "<the project's folder>" in text, body
+        assert str(repo) not in body and str(repo.parent) not in body and str(PLUGIN) not in body, body
+        assert "Sleepy" in body and "next Claude Code session in that project" in body, body
     finally:
         door.close()
         world.close()
@@ -351,7 +364,9 @@ def test_same_slug_two_repos_gives_300_with_shared_folder_warning():
         world.add("app", repo=repo_b)
         status, headers, body = door.request("/app")
         assert status == 300 and "location" not in headers, (status, headers)
-        assert str(repo_a) in body and str(repo_b) in body, body
+        # No path (the paths fix, 2.3.1): the two are told apart by their ports and start times, which the page says
+        assert str(repo_a) not in body and str(repo_b) not in body and str(world.state) not in body, body
+        assert body.count("<li>") == 2 and "started" in body and body.count("127.0.0.1:") >= 2, body  # both are up: their ports are links
         assert "share one board folder" in body, body
     finally:
         door.close()
@@ -396,7 +411,9 @@ def test_moved_project_live_record_wins_old_one_listed_not_running():
         live = world.add("proj", repo=new_repo, up=True, started=now_iso())
         assert location(door, "/proj") == (302, f"http://127.0.0.1:{live['port']}/"), "the live record wins"
         body = door.request("/")[2]
-        assert str(old_repo) in body and "not running" in body, "the old one is still listed, as not running"
+        assert "not running" in body, "the old one is still listed, as not running"
+        assert str(old_repo) not in body and str(new_repo) not in body, "and no path says which project it is"
+        assert body.count("<td>proj</td>") == 2, "both rows are there: " + body
     finally:
         door.close()
         world.close()
@@ -1530,14 +1547,241 @@ def test_g5_output_that_is_not_utf8_is_read_not_raised():
     assert out is not None and "ok" in out, out
 
 
+# ── release 2.3.1: no response of the front door carries a path ───────────────────────────────────────────────────────
+# A finding of the automated review of 15 Nov 2026 (11:39), decided by the owner at 16:40: the door shows each board's name, port
+# and whether it is up, and never an absolute path (a project's, a main checkout's, the plugin's, the status-board home, the home
+# folder of the account). Inside the process the rows keep their paths: `resolve`, the election, board_link.py use them.
+ABS_PATH = re.compile(r"(?<![\w:/.%-])/(?:Users|home|private|tmp|var|opt|usr|etc|Volumes|root|Applications|Library)/[\w.@~-]")
+
+
+def paths_world() -> tuple[World, Path, Path]:
+    """Boards of every kind the door answers about: up, down, a worktree and its main checkout, two projects of one name, a
+    prefix that matches several, and a board folder with no record."""
+    world = World()
+    base = world.state.parent
+    deep = base / "deep" / "nested" / "alpha"
+    main, linked = base / "wt" / "mainproj", base / "wt" / "linked-tree"
+    for folder in (deep, main, linked, base / "beta", base / "a" / "gamma", base / "b" / "gamma"):
+        folder.mkdir(parents=True)
+    world.add("alpha", name="Alpha", repo=deep)
+    world.add("beta", name="Beta", repo=base / "beta", up=False)
+    world.add("gamma", repo=base / "a" / "gamma", up=False, started=now_iso(-7200))
+    world.add("gamma", repo=base / "b" / "gamma", up=False, started=now_iso(-60), main_repo=str(main))
+    world.add("notes-a")
+    world.add("notes-b")
+    world.add("mainproj", repo=main)
+    world.add("linked-tree", repo=linked, main_repo=str(main))
+    world.add("ghost", record=False)
+
+    def drain(listener: socket.socket) -> None:  # the door connects to every board that is up on every request: accept them
+        while True:
+            try:
+                conn, _ = listener.accept()
+                conn.close()
+            except OSError:
+                return
+
+    for listener in world.sockets:
+        threading.Thread(target=drain, args=(listener,), daemon=True).start()
+    return world, main, linked
+
+
+def private_strings(world: World) -> list[str]:
+    found = {str(world.state), str(world.state.parent), str(TMP), str(FAKE_HOME), str(PLUGIN), str(BOARD_DIR), str(HOME)}
+    for path in (world.state / "servers").glob("*.json"):
+        rec = json.loads(path.read_text())
+        found.update(str(v) for v in (rec["repo"], rec.get("main_repo")) if v)
+    found.add(str(Path.home()))
+    found.add(pwd.getpwuid(os.getuid()).pw_dir)
+    return sorted(s for s in found if len(s) > 4)
+
+
+def raw_request(port: int, payload: bytes) -> tuple[int, dict, str]:
+    """A request the standard library's own error answers are built for: sent as bytes, read to the end."""
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(payload)
+        chunks = []
+        while True:
+            data = sock.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+    head, _, body = b"".join(chunks).partition(b"\r\n\r\n")
+    lines = head.decode("latin-1").split("\r\n")
+    headers = {k.lower(): v for k, v in (line.split(": ", 1) for line in lines[1:] if ": " in line)}
+    return int(lines[0].split()[1]), headers, body.decode("utf-8", "replace")
+
+
+def every_answer(door: Door, foreign: Door) -> list[tuple[str, int, tuple]]:
+    host = f"127.0.0.1:{door.port}"
+    return [
+        ("GET /", 200, door.request("/")),
+        ("HEAD /", 200, door.request("/", method="HEAD")),
+        ("GET /_boards.json (no challenge)", 200, door.request("/_boards.json")),
+        ("GET /_boards.json?c= (a challenge)", 200, door.request("/_boards.json?c=" + "ab" * 16)),
+        ("GET /alpha (302)", 302, door.request("/alpha")),
+        ("GET /nope (404)", 404, door.request("/nope")),
+        ("GET /notes (300, several boards)", 300, door.request("/notes")),
+        ("GET /gamma (300, two projects of one name)", 300, door.request("/gamma")),
+        ("GET /beta (503, not running)", 503, door.request("/beta")),
+        ("GET /ghost (503, no record)", 503, door.request("/ghost")),
+        ("GET /alpha (503, a port that is not a board)", 503, foreign.request("/alpha")),
+        ("GET / with a Host that is not ours (403)", 403, door.request("/", host="evil.example")),
+        ("POST / (405)", 405, door.request("/", method="POST", body=b"x")),
+        ("an unsupported method (501)", 501, raw_request(door.port, f"FOO / HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())),
+        ("a request line of 70 000 bytes (414)", 414, raw_request(door.port, b"GET /" + b"a" * 70000 + f" HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())),
+        ("a request that is not HTTP (400)", 400, raw_request(door.port, b"\x00\x01\x02 \x03\r\n\r\n")),
+    ]
+
+
+def test_p1_no_response_of_the_door_carries_an_absolute_path_on_any_route_or_status():
+    world, _main, _linked = paths_world()
+    door, foreign = Door(world), Door(world, verify=lambda row: False)
+    try:
+        private = private_strings(world)
+        assert any("deep" in p for p in private) and any(str(PLUGIN) == p for p in private), private
+        for label, status, (got, headers, body) in every_answer(door, foreign):
+            assert got == status, (label, got, status, body[:200])
+            text = "\n".join(f"{k}: {v}" for k, v in headers.items()) + "\n" + body
+            for secret in private:
+                assert secret not in text, f"{label}: carries {secret!r}: {text[:400]}"
+            assert not ABS_PATH.search(text), f"{label}: carries an absolute path: {ABS_PATH.search(text).group(0)} in {text[:400]}"
+    finally:
+        foreign.close()
+        door.close()
+        world.close()
+
+
+def test_p2_the_json_rows_hold_only_names_ports_state_and_the_name_of_the_main_project():
+    world, _main, _linked = paths_world()
+    door = Door(world)
+    try:
+        status, headers, body = door.request("/_boards.json")
+        data = json.loads(body)
+        assert status == 200 and data["service"] == FD().SERVICE and data["v"] == 1 and data["front_port"] == door.port, data
+        want = {"slug", "name", "port", "host", "started", "up", "known", "foreign", "unchecked", "worktree_of"}
+        by_slug = {}
+        for row in data["boards"]:
+            assert set(row) == want, (sorted(row), sorted(want ^ set(row)))
+            by_slug.setdefault(row["slug"], []).append(row)
+        assert by_slug["linked-tree"][0]["worktree_of"] == "mainproj", by_slug["linked-tree"]
+        assert by_slug["mainproj"][0]["worktree_of"] is None and by_slug["alpha"][0]["worktree_of"] is None
+        assert by_slug["alpha"][0]["up"] is True and by_slug["alpha"][0]["name"] == "Alpha" and by_slug["alpha"][0]["port"] > 0
+        assert by_slug["beta"][0]["up"] is False and by_slug["ghost"][0]["known"] is False, by_slug
+        assert len(by_slug["gamma"]) == 2, "two projects of one name are two rows"
+    finally:
+        door.close()
+        world.close()
+
+
+def test_p3_inside_the_process_the_rows_keep_their_paths():
+    """board_link.py calls FrontDoor.resolve in its own process and compares row["repo"]; the election and the revive hook use the
+    rows too. Only what leaves over the socket changes."""
+    world, main, linked = paths_world()
+    door = Door(world)
+    try:
+        rows = {(r["slug"], r["repo"]): r for r in door.door.rows()}
+        assert ("alpha", str(world.state.parent / "deep" / "nested" / "alpha")) in rows, sorted(rows)
+        kind, found = door.door.resolve("linked-tree")
+        assert kind == "one" and found[0]["repo"] == str(linked) and found[0]["main_repo"] == str(main), (kind, found)
+        kind, found = door.door.resolve("gamma")
+        assert kind == "clash" and len({r["repo"] for r in found}) == 2, (kind, found)
+    finally:
+        door.close()
+        world.close()
+
+
+def test_p4_the_pages_that_used_a_path_still_help_without_one():
+    world, main, _linked = paths_world()
+    door = Door(world)
+    try:
+        _, _, down = door.request("/beta")
+        text = html.unescape(down)
+        assert "Beta" in down or "beta" in down, down
+        assert "next Claude Code session in that project" in down, down
+        assert 'python3 "<the plugin\'s status-board folder>/serve.py" --repo "<the project\'s folder>" &' in text, text
+        _, _, clash = door.request("/gamma")
+        assert clash.count("<li>") == 2 and "worktree of mainproj" in clash and "not a worktree" in clash, clash
+        assert clash.count("started ") == 2 and "was on " in clash, clash
+        assert "share one board folder" in clash, clash
+        _, _, listing = door.request("/")
+        assert "worktree of mainproj" in listing and listing.count("<td>gamma</td>") == 2, listing
+    finally:
+        door.close()
+        world.close()
+
+
+def test_p5_the_short_addresses_resolve_as_before_old_door_and_new_side_by_side():
+    if OLD_PLUGIN is None:
+        raise NotRun("needs --old-plugin <the plugin directory of 2.3.0>")
+    spec = importlib.util.spec_from_file_location("front_door_2_3_0", OLD_PLUGIN / "status-board" / "front_door.py")
+    old = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(old)
+    world, _main, _linked = paths_world()
+    FD().make_key(world.state)
+    new_door, old_door = Door(world), Door(world, module=old)
+    try:
+        names = ["alpha", "ALPHA", "al", "beta", "gamma", "notes", "notes-a", "mainproj", "main", "linked-tree", "ghost", "nope", "a/b", "my%20app", "alpha/"]
+        for name in names:
+            a = new_door.request("/" + name)
+            b = old_door.request("/" + name)
+            ports_a = re.sub(r":\d+", ":PORT", a[1].get("location", ""))
+            ports_b = re.sub(r":\d+", ":PORT", b[1].get("location", ""))
+            assert (a[0], ports_a) == (b[0], ports_b), (name, a[0], b[0], a[1].get("location"), b[1].get("location"))
+            if a[1].get("location"):
+                assert a[1]["location"].split(":")[-1].split("/")[0] == b[1]["location"].split(":")[-1].split("/")[0], name
+        for name in names:
+            kind_new, found_new = new_door.door.resolve(name)
+            kind_old, found_old = old_door.door.resolve(name)
+            assert kind_new == kind_old and [(r["slug"], r["port"], r["repo"]) for r in found_new] == [(r["slug"], r["port"], r["repo"]) for r in found_old], name
+        # what the old one sent and the new one does not: the paths
+        old_rows = json.loads(old_door.request("/_boards.json")[2])["boards"]
+        assert any("repo" in row for row in old_rows), "the stand-in for the old door must be the one that sent paths"
+        # a board of either version probes a door of either version, and believes it
+        assert FD().probe_state(new_door.port, world.state) == "door"
+        assert old.probe_state(new_door.port, world.state) == "door", "an old board probing the new door"
+        assert FD().probe_state(old_door.port, world.state) == "door", "a new board probing the old door"
+        assert old.probe_state(old_door.port, world.state) == "door"
+    finally:
+        old_door.close()
+        new_door.close()
+        world.close()
+
+
+def test_p6_nothing_in_the_plugin_reads_the_doors_rows_over_the_socket():
+    """The door's JSON is read by one thing, a board's probe, for its proof; no file reads `boards` or `repo` from it."""
+    mentions = []
+    for path in PLUGIN.rglob("*"):
+        if not path.is_file() or ".git" in path.parts or "tests" in path.parts or path.suffix not in (".py", ".md", ".json", ".tsx", ".ts", ".sh", ".html", ".js"):
+            continue
+        if "_boards.json" in path.read_text(errors="replace"):
+            mentions.append(path.relative_to(PLUGIN).as_posix())
+    assert mentions == ["status-board/front_door.py"], mentions
+    source = (BOARD_DIR / "front_door.py").read_text()
+    probe = source[source.index("def probe_state"): source.index("def probe(")]
+    assert '"boards"' not in probe and '"repo"' not in probe and "'repo'" not in probe, "the probe reads only the service marker and the proof"
+
+
+def test_p7_the_readme_says_what_the_list_shows_and_that_it_holds_no_paths():
+    text = " ".join((PLUGIN / "README.md").read_text().split())
+    assert re.search(r"front door[^.]*lists? (?:every|each) board by (?:its )?name, port", text, re.I) or "name, port and whether it is up" in text, \
+        "README.md does not say what the front door lists"
+    assert re.search(r"no (?:folder|path)s? (?:of a project|is shown|are shown|leaves)|never (?:shows|sends|gives) (?:a|an|any) (?:absolute )?(?:folder )?path|holds no (?:folder )?paths?", text, re.I) or "no project path" in text, \
+        "README.md does not say the door shows no paths"
+
+
 def main() -> int:
     tests = sorted((n, f) for n, f in globals().items() if n.startswith("test_") and callable(f) and ARGS.only in n)
     failed = 0
+    not_run = 0
     try:
         for name, fn in tests:
             try:
                 fn()
                 print(f"PASS  {name}")
+            except NotRun as why:
+                not_run += 1
+                print(f"NOT RUN  {name}: {why}")
             except Exception as exc:  # noqa: BLE001 - a test runner reports every failure
                 failed += 1
                 reason = " ".join(str(exc).split())[:300] or type(exc).__name__
@@ -1554,7 +1798,8 @@ def main() -> int:
                 pass
         left = sum(1 for proc in PROCESSES if proc.poll() is None)
         shutil.rmtree(TMP, ignore_errors=True)
-    print(f"{len(tests) - failed} passed, {failed} failed, processes left running: {left}, plugin under test: {PLUGIN}")
+    print(f"{len(tests) - failed - not_run} passed, {failed} failed, processes left running: {left}"
+          + (f", {not_run} not run (they need --old-plugin)" if not_run else "") + f", plugin under test: {PLUGIN}")
     return 1 if failed or left else 0
 
 
