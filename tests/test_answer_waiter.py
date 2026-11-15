@@ -1827,7 +1827,9 @@ def test_a22_hooks_json_waiter_timeout_below_2_31_ms_and_above_deadline():
         assert timeout > deadline_s, (event, timeout, deadline_s)
         # Claude Code 2.1.325 clamps a timer above 2^31-1 ms and logs "timer delay exceeds the setTimeout range" (spike)
         assert timeout * 1000 < 2**31 - 1, (event, timeout)
-    texts = " ".join(group.get("description", "") for groups in config.values() for group in groups)
+    # the descriptions of the hook groups are in hooks/README.md (they were `description` keys of hooks.json until Claude Code
+    # reported those as unknown, 15 Nov 2026)
+    texts = " ".join((HOOKS_DIR / "README.md").read_text().split())
     assert "23 h" not in texts, "a description still names the old deadline"
 
 
