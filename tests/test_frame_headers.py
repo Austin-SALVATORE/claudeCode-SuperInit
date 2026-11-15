@@ -22,8 +22,12 @@ Exit code: 0 when every test passes, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import http.client
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -115,10 +119,50 @@ class Server:
                 time.sleep(0.1)
         raise RuntimeError("server did not start")
 
+    @property
+    def raw_key(self) -> bytes:
+        """The scratch home's board key (2.4.0: a read of the report and every write need a token made from it)."""
+        return (HOME_DIR / "servers" / "board.key").read_bytes()
+
+    @property
+    def credential(self) -> dict:
+        """The credential the board's own page sends: the token header
+        (`X-Board-Token`, `v2.<port>.<run>.<issued>.<HMAC>`, version 2: the run is the one the board's proof gives);
+        there is no cookie."""
+        issued = int(time.time())
+        run = self.run()
+        digest = hmac.new(self.raw_key, f"browser:v2:{self.port}:{run}:{issued}".encode(), hashlib.sha256).hexdigest()
+        return {"X-Board-Token": f"v2.{self.port}.{run}.{issued}.{digest}"}
+
+    def run(self) -> str:
+        """The run of this board's process (16 hex), asked of `/_proof` as the opener asks it."""
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/_proof?c=" + "0" * 32)
+        found = json.loads(conn.getresponse().read())
+        conn.close()
+        return found["run"]
+
+    def signed(self, name: str) -> str:
+        """The signed address of a shot (`shot/<name>?s=<expires>.<digest>`, ten minutes), as `report.json` gives it."""
+        expires = int(time.time()) + 600
+        digest = hmac.new(self.raw_key, f"shot:v1:{self.port}:{name}:{expires}".encode(), hashlib.sha256).hexdigest()
+        return f"/shot/{name}?s={expires}.{digest}"
+
+    def page_policy(self) -> str:
+        """The policy the page is sent with: the hash of its one inline script (2.4.0)."""
+        script = re.findall(r"<script>(.*?)</script>", (TREE / "index.html").read_text(encoding="utf-8"), re.S)[0]
+        source = "'sha256-" + base64.b64encode(hashlib.sha256(script.encode()).digest()).decode() + "'"
+        return (f"default-src 'none'; script-src {source}; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+                "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+
     def raw(self, method: str, path: str, headers: dict | None = None, body: bytes | None = None,
             connect_to: str = "127.0.0.1") -> tuple[int, list[tuple[str, str]], bytes]:
-        """One request with exactly these headers: (status, [(name, value), ...] with repeats kept, body)."""
+        """One request with exactly these headers: (status, [(name, value), ...] with repeats kept, body). A body that is a function
+        is called just before the request is sent (the opener's file must be as young as its form)."""
         headers = headers or {}
+        body = body() if callable(body) else body
         conn = http.client.HTTPConnection(connect_to, self.port, timeout=10)
         conn.putrequest(method, path, skip_host="Host" in headers)
         for name, value in headers.items():
@@ -152,30 +196,60 @@ def kinds(server: Server) -> list[tuple[str, int, str, str, dict, bytes | None]]
     _, page_headers, _ = server.raw("GET", "/")
     last_modified = values(page_headers, "Last-Modified")[0]
     foreign = {"Host": f"evil.example:{server.port}"}
+    # 2.4.0: a read of the report and every write carry a token for this board in the `X-Board-Token` header, as the page's own requests
+    # do after the opener has let the browser in; a picture is asked for by a signed address (`server.signed`). The page needs none.
+    # A few kinds are sent without, to see the refusals' headers too. There is no cookie any more.
+    key = server.credential
+    form = {"Content-Type": "application/x-www-form-urlencoded", "Origin": "null"}
+
+    n = "0123456789abcdef"
+
+    def opening() -> bytes:
+        """What the opener does: its file (0600, in the home's servers/) and the form's fields, a token and the file's nonce."""
+        path = HOME_DIR / "servers" / f"open-{n}.html"
+        path.write_text("<form>")
+        path.chmod(0o600)
+        return f"t={key['X-Board-Token']}&n={n}".encode()
+
+    def the_same_form() -> bytes:
+        return f"t={key['X-Board-Token']}&n={n}".encode()  # the file is gone by now: the opening was used
+
     return [
         ("the page", 200, "GET", "/", {}, None),
         ("the page, as /index.html", 200, "GET", "/index.html", {}, None),
         ("the page, head only", 200, "HEAD", "/", {}, None),
         ("the page, not modified", 304, "GET", "/", {"If-Modified-Since": last_modified}, None),
-        ("report.json", 200, "GET", "/report.json", {}, None),
-        ("report.json with a query", 200, "GET", "/report.json?t=1", {}, None),
+        ("an address with a key in it: the page, nothing set", 200, "GET", f"/?k={server.raw_key.hex()}", {}, None),
+        ("the opener's form: the storing page", 200, "POST", "/_open", form, opening),
+        ("the opener's form, used up: refused", 401, "POST", "/_open", form, the_same_form),
+        ("report.json", 200, "GET", "/report.json", key, None),
+        ("report.json with a query", 200, "GET", "/report.json?t=1", key, None),
+        ("report.json without the key: refused", 401, "GET", "/report.json", {}, None),
+        ("report.json asked by a page of another port: refused", 403, "GET", "/report.json", {**key, "Sec-Fetch-Site": "same-site"}, None),
+        ("a picture asked by a page of another port: refused", 403, "GET", server.signed("dot.png"), {"Sec-Fetch-Site": "same-site"}, None),
         # HEAD is not routed to the report today: the static handler looks for a
         # file of that name and answers 404. Pinned as it is; not part of this change.
         ("report.json, head only (not routed: 404)", 404, "HEAD", "/report.json", {}, None),
-        ("a picture under shots/", 200, "GET", "/shot/dot.png", {}, None),
-        ("an svg under shots/", 200, "GET", "/shot/planted.svg", {}, None),
-        ("a picture that is not there", 404, "GET", "/shot/gone.png", {}, None),
+        ("a picture under shots/", 200, "GET", server.signed("dot.png"), {}, None),
+        ("an svg under shots/", 200, "GET", server.signed("planted.svg"), {}, None),
+        ("a picture without a signed address: refused", 401, "GET", "/shot/dot.png", {}, None),
+        ("a picture that is not there", 404, "GET", server.signed("gone.png"), {}, None),
         ("a path that is not there", 404, "GET", "/nothing-here", {}, None),
-        ("a plain file of the folder", 200, "GET", "/sub/note.txt", {}, None),
-        ("a folder without its slash: a redirect", 301, "GET", "/sub", {}, None),
-        ("a folder's listing", 200, "GET", "/sub/", {}, None),
+        # The static handler serves the page and nothing else of the folder any more (2.4.0): these three were 200, 301 and 200.
+        ("a plain file of the folder: not served", 404, "GET", "/sub/note.txt", {}, None),
+        ("a folder without its slash: not served", 404, "GET", "/sub", {}, None),
+        ("a folder's listing: not served", 404, "GET", "/sub/", {}, None),
         ("a read under another name: refused", 403, "GET", "/report.json", foreign, None),
         ("a head under another name: refused", 403, "HEAD", "/", foreign, None),
-        ("an answer from the page: recorded", 201, "POST", "/answer", {**JSON_HEADERS, "Origin": own}, answer),
-        ("an answer from another origin: refused", 403, "POST", "/answer", {**JSON_HEADERS, "Origin": "https://example.invalid"}, answer),
-        ("an answer sent as text: refused", 415, "POST", "/answer", {"Content-Type": "text/plain"}, answer),
-        ("an answer that is not JSON: refused", 400, "POST", "/answer", JSON_HEADERS, b"not json"),
-        ("a post to a path that does not take one", 404, "POST", "/nope", JSON_HEADERS, b"{}"),
+        ("an answer from the page: recorded", 201, "POST", "/answer", {**JSON_HEADERS, **key, "Origin": own}, answer),
+        ("an answer without the key: refused", 401, "POST", "/answer", {**JSON_HEADERS, "Origin": own}, answer),
+        ("an answer from another origin: refused", 403, "POST", "/answer", {**JSON_HEADERS, **key, "Origin": "https://example.invalid"}, answer),
+        ("an answer with no origin: refused", 403, "POST", "/answer", {**JSON_HEADERS, **key}, answer),
+        ("an answer to a question never asked: refused", 409, "POST", "/answer", {**JSON_HEADERS, **key, "Origin": own},
+         json.dumps({"q": "Never asked?", "answer": "yes"}).encode()),
+        ("an answer sent as text: refused", 415, "POST", "/answer", {"Content-Type": "text/plain", **key}, answer),
+        ("an answer that is not JSON: refused", 400, "POST", "/answer", {**JSON_HEADERS, **key, "Origin": own}, b"not json"),
+        ("a post to a path that does not take one", 404, "POST", "/nope", {**JSON_HEADERS, **key}, b"{}"),
         ("OPTIONS: not supported", 501, "OPTIONS", "/", {}, None),
         ("PUT: not supported", 501, "PUT", "/", {}, b"x"),
         ("DELETE: not supported", 501, "DELETE", "/report.json", {}, None),
@@ -216,7 +290,7 @@ def test_F1_every_kind_of_response_forbids_being_framed():
             if len(policies) != 1 or FRAME_POLICY not in directives:
                 faults.append(f"{label}: Content-Security-Policy {policies}")
         assert server.answers()["Ship it?"]["answer"] == "yes", "the one valid answer must still be recorded"
-        assert sorted(server.answers()["Ship it?"]) == ["answer", "at"], "answers.json changed shape"
+        assert sorted(server.answers()["Ship it?"]) == ["answer", "at", "from"], "answers.json changed shape (2.4.0 adds `from`, nothing else)"
     finally:
         server.stop()
     unprotected = len({fault.split(": ")[0] for fault in faults})
@@ -224,11 +298,13 @@ def test_F1_every_kind_of_response_forbids_being_framed():
 
 
 def test_F2_a_response_without_a_policy_gets_only_the_frame_rule():
-    """The page and the rest get no policy for scripts or styles: that is another change."""
+    """Only the page gets a policy for scripts and styles (2.4.0: its one inline script, by hash); data and errors get the frame rule."""
     server = Server()
     try:
-        for path in ("/", "/report.json", "/nothing-here"):
-            _, pairs, _ = server.raw("GET", path)
+        _, pairs, _ = server.raw("GET", "/")
+        assert values(pairs, "Content-Security-Policy") == [server.page_policy()], values(pairs, "Content-Security-Policy")
+        for path in ("/report.json", "/nothing-here"):
+            _, pairs, _ = server.raw("GET", path, server.credential)
             assert values(pairs, "Content-Security-Policy") == [FRAME_POLICY], (path, values(pairs, "Content-Security-Policy"))
     finally:
         server.stop()
@@ -239,7 +315,7 @@ def test_F3_a_shot_keeps_its_sandbox_in_one_policy():
     server = Server()
     try:
         for name, kind in (("planted.svg", "image/svg+xml"), ("dot.png", "image/png")):
-            status, pairs, _ = server.raw("GET", f"/shot/{name}")
+            status, pairs, _ = server.raw("GET", server.signed(name))  # 2.4.0: a shot is asked for by a signed address
             policies = values(pairs, "Content-Security-Policy")
             assert status == 200 and values(pairs, "Content-Type") == [kind], (status, values(pairs, "Content-Type"))
             assert len(policies) == 1, f"{name}: {len(policies)} Content-Security-Policy headers, a browser would combine them: {policies}"
@@ -254,21 +330,29 @@ def test_F3_a_shot_keeps_its_sandbox_in_one_policy():
 
 
 def test_F4_the_refusal_of_a_machine_on_the_network_is_protected_too():
-    """deny(): the 403 sent to an unauthorised client of a board bound beyond loopback, and a served page."""
+    """The refusal sent to an unauthorised client of a board bound beyond loopback, and the pages served to it.
+
+    Before 2.4.0 (HEAD c3bdedf): `GET /` from the network without the token was a 403 "Not authorised", and `GET /?k=<token>` a 200 that
+    set a cookie, with only the frame rule as policy. Now a navigation cannot carry a credential (a cookie is gone; the page keeps the
+    token in its own storage and sends it as a header), so the bare page (no data in it) is served to the network without a token
+    and the stranger is refused where the data is: `GET /report.json` is the 403. `GET /?k=<token>` answers the page that stores it."""
     address = lan_address()
     if address is None:
         raise Skip("this machine has no address other than loopback, so a request cannot arrive as a stranger")
     server = Server(host="0.0.0.0")
     try:
-        status, pairs, body = server.raw("GET", "/", connect_to=address)
+        status, pairs, body = server.raw("GET", "/report.json", connect_to=address)
         assert status == 403 and b"Not authorised" in body, (status, body[:60])
         assert values(pairs, "X-Frame-Options") == ["DENY"], pairs
         assert FRAME_POLICY in values(pairs, "Content-Security-Policy"), pairs
+        status, pairs, body = server.raw("GET", "/", connect_to=address)
+        assert status == 200 and b"<title>status board</title>" in body and not values(pairs, "Set-Cookie"), (status, pairs)
+        assert values(pairs, "Content-Security-Policy") == [server.page_policy()], pairs
         token = (HOME_DIR / "lan-token").read_text().strip()
-        status, pairs, _ = server.raw("GET", f"/?k={token}", connect_to=address)
-        assert status == 200 and values(pairs, "Set-Cookie"), (status, pairs)
+        status, pairs, body = server.raw("GET", f"/?k={token}", connect_to=address)
+        assert status == 200 and not values(pairs, "Set-Cookie") and token.encode() in body, (status, pairs)
         assert values(pairs, "X-Frame-Options") == ["DENY"], pairs
-        assert values(pairs, "Content-Security-Policy") == [FRAME_POLICY], pairs
+        assert len(values(pairs, "Content-Security-Policy")) == 1 and FRAME_POLICY in values(pairs, "Content-Security-Policy")[0], pairs
     finally:
         server.stop()
 
@@ -296,20 +380,30 @@ HEADERS_BEFORE = {
     "the page, as /index.html": _PAGE,
     "the page, head only": _PAGE,
     "the page, not modified": [NO_STORE],
+    "an address with a key in it: the page, nothing set": _PAGE,
+    "the opener's form: the storing page": [NO_STORE, ("content-length", "*"), ("content-type", "text/html; charset=utf-8")],
+    "the opener's form, used up: refused": [*_REFUSED, NO_STORE],
     "report.json": _REPORT,
     "report.json with a query": _REPORT,
+    "report.json without the key: refused": _REPORT,
+    "report.json asked by a page of another port: refused": _REPORT,
+    "a picture asked by a page of another port: refused": [*_REFUSED, NO_STORE],
     "report.json, head only (not routed: 404)": _ERROR_ON_REPORT,
     "a picture under shots/": _shot("image/png"),
     "an svg under shots/": _shot("image/svg+xml"),
+    "a picture without a signed address: refused": [*_REFUSED, NO_STORE],
     "a picture that is not there": _ERROR,
     "a path that is not there": _ERROR,
-    "a plain file of the folder": [NO_STORE, ("content-length", "*"), ("content-type", "text/plain"), ("last-modified", "*")],
-    "a folder without its slash: a redirect": [NO_STORE, ("content-length", "*"), ("location", "/sub/")],
-    "a folder's listing": [NO_STORE, ("content-length", "*"), ("content-type", "text/html; charset=utf-8")],
+    "a plain file of the folder: not served": _ERROR,
+    "a folder without its slash: not served": _ERROR,
+    "a folder's listing: not served": _ERROR,
     "a read under another name: refused": _REFUSED,
     "a head under another name: refused": [*_REFUSED, NO_STORE],
     "an answer from the page: recorded": _JSON,
+    "an answer without the key: refused": _JSON,
     "an answer from another origin: refused": _JSON,
+    "an answer with no origin: refused": _JSON,
+    "an answer to a question never asked: refused": _JSON,
     "an answer sent as text: refused": _JSON,
     "an answer that is not JSON: refused": _JSON,
     "a post to a path that does not take one": _ERROR,
@@ -320,17 +414,27 @@ HEADERS_BEFORE = {
 
 
 def test_F5_nothing_else_in_the_headers_changed():
-    """Each response is what it was, plus the two protections and not one header more."""
+    """Each response is what it was, plus the two protections and the referrer policy (2.4.0: a token must never be sent on as a
+    Referer), and not one header more; and no response sets a cookie. The page, and the page that stores a token, carry the hash
+    policy of 2.4.0 beside the frame rule (the page's own hash is that of its one inline script, the storing page's that of its own)."""
     server = Server()
     faults: list[str] = []
     try:
         rows = kinds(server)
         assert {row[0] for row in rows} == set(HEADERS_BEFORE), "the table of headers and the list of responses differ"
         for label, status, method, path, headers, body in rows:
-            _, pairs, _ = server.raw(method, path, headers, body)
+            _, pairs, answered = server.raw(method, path, headers, body)
             shot = path.startswith("/shot/") and status == 200
             policy = f"{SHOT_POLICY_BEFORE}; {FRAME_POLICY}" if shot else FRAME_POLICY
-            wanted = sorted([*HEADERS_BEFORE[label], ("x-frame-options", "DENY"), ("content-security-policy", policy)])
+            if method in ("GET", "HEAD") and path.split("?")[0] in ("/", "/index.html") and status in (200, 304):
+                policy = server.page_policy()
+            if path == "/_open" and status == 200:
+                script = re.findall(r"<script>(.*?)</script>", answered.decode(), re.S)[0]
+                source = "'sha256-" + base64.b64encode(hashlib.sha256(script.encode()).digest()).decode() + "'"
+                policy = f"default-src 'none'; script-src {source}; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; {FRAME_POLICY}"
+            assert not values(pairs, "Set-Cookie"), f"{label}: a cookie was set"
+            wanted = sorted([*HEADERS_BEFORE[label], ("x-frame-options", "DENY"), ("content-security-policy", policy),
+                             ("referrer-policy", "no-referrer")])
             got = sorted((name, "*" if name in ("content-length", "last-modified") else value)
                          for name, value in pairs if name not in ("date", "server"))
             if got != wanted:

@@ -3,19 +3,26 @@
 
     python3 board_link.py --start <the folder the session was started in> [--no-agent-check]   (a payload on stdin, optional)
 
-The mod `hooks/board-link.tsx` draws a row above the prompt with the address `http://localhost:8800/<name>` of the
-project's own board, as a link. A mod runs in a sandbox without Python, and the rules for which project, which board and
+The mod `hooks/board-link.tsx` draws a row above the prompt with one button, labelled with the address `localhost:8800/<name>` of the
+project's own board, that opens the board. A mod runs in a sandbox without Python, and the rules for which project, which board and
 which name are Python and already written, so the mod asks this helper and draws what it prints. It prints one line of
 JSON, or nothing (any error, and a Claude Code of any version that did not ask):
 
     {"state": "<the status-board home it read>", "url": "<the address>" | null, "up": true | false | null, "agent": true?,
-     "data": "<the plugin's data folder>", "seen_paths": ["<a file of its seen/ folder>", ...], "status_line_seen": true | false}
+     "port": <the board's port> | null, "data": "<the plugin's data folder>", "seen_paths": ["<a file of its seen/ folder>", ...],
+     "status_line_seen": true | false}
 
 `state`, `url`, `up` and `agent`, and the flags `--start` and `--no-agent-check`, are a contract with status line filters, the
-shipped one and hand-made ones: they and the command line are kept as they are. The last three are release 2.3.0's (where the link shows is a choice, made at set-up): the
+shipped one and hand-made ones: they and the command line are kept as they are (a hand-made filter reads `url` and `up` and links
+to `url`: the short address, as before). `port` is release 2.4.0's, a new key beside them: the port of the board's own server, from its
+record, so that the shipped status line can link to `http://127.0.0.1:<port>/`, the board itself, and never to `localhost` (a browser given
+`localhost` may try `::1` first, where another program can listen unless the front door, which holds `::1` as well as 127.0.0.1 while it
+runs, got there first). It is null wherever `url` is. The `data`, `seen_paths` and
+`status_line_seen` keys are release 2.3.0's (where the link shows is a choice, made at set-up): the
 status line's filter touches `seen/<first 16 hex of sha1 of the start folder's path>` in the plugin's data folder each time it
-places the link, and `status_line_seen` says whether that file is younger than ten minutes; the row above the prompt is drawn
-when it is not (or when the owner kept it on). `seen_paths` are the files the mod looks at between two runs.
+places the link, and `status_line_seen` says whether that file is younger than ten minutes. The button above the prompt no longer
+reads them (it is drawn whenever either board link switch is on); they are kept as a contract with hand-made readers.
+`seen_paths` are the files that say it.
 
 `url` is null where there is nothing to show: the folder is no project, the project has no board, the board has never been
 started (no record: the front door lists it as "no address yet"), the board's name is not one the front door would send to
@@ -136,7 +143,7 @@ def link_for(start: Path, payload: dict | None = None, check_agent: bool = True,
     import answer_ledger as ledger
     import front_door
 
-    out: dict = {"state": str(ledger.STATE), "url": None, "up": None}
+    out: dict = {"state": str(ledger.STATE), "url": None, "up": None, "port": None}
     out.update(status_line_marker(start, given))  # release 2.3.0: the keys above are the status line's contract, these are new
     if check_agent and agent_session(payload or {}):
         out["agent"] = True
@@ -157,6 +164,8 @@ def link_for(start: Path, payload: dict | None = None, check_agent: bool = True,
         return out
     out["url"] = front_door.name_address(board.name)
     out["up"] = bool(row.get("up"))
+    port = row.get("port")
+    out["port"] = port if type(port) is int and 0 < port < 65536 else None  # the board's own server, for a link that does not go through the door
     return out
 
 

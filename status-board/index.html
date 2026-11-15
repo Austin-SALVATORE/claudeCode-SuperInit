@@ -626,6 +626,8 @@
     dialog.confirm[open]{animation:confirmIn 180ms cubic-bezier(.2,.8,.2,1) both}
   }
 
+  /* A board that has closed itself to this tab: only the banner is on screen (see showClosed). */
+  body.closed #work, body.closed #more, body.closed #tabs, body.closed #lede, body.closed #crew, body.closed #stamp{display:none !important}
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:40;
     max-width:min(92vw,560px);text-align:center;background:var(--green);color:var(--sheet);
     padding:var(--s3) var(--s5);border-radius:10px;font:600 var(--t-body)/1.4 var(--text);opacity:0;
@@ -743,6 +745,25 @@ const $ = id => document.getElementById(id)
 const store = {
   get(k){ try { return localStorage.getItem('board.' + k) } catch (e) { return null } },
   set(k, v){ try { localStorage.setItem('board.' + k, v) } catch (e) {} },
+}
+
+// The board's token (2.4.0, version 2). A token for THIS board and THIS RUN of it, made by the opener from the board's key, is kept
+// by this page in the store TOKEN_STORE_KIND names, under TOKEN_STORAGE, and is sent as the header X-Board-Token on every request the
+// page makes to the board: the report, an answer, and the two writes of the backlog. The store is sessionStorage (this tab only:
+// a program that takes the port of a stopped board and loads its address in another tab finds none, and what
+// this tab holds is the token of a run that has ended once the board has stopped) unless localStorage is chosen (every tab of the origin);
+// it is one constant, and the server's storing page has the same one (serve.py, TOKEN_STORE_KIND; a test says they agree). Neither
+// is a cookie: a cookie goes to every port of the host. The board answers 401 with `code: 'key'` when it has none or a bad one
+// (including the token of an earlier run), and the page says so (see poll). Nothing else of the page changes.
+const TOKEN_STORAGE = 'board-token'
+const TOKEN_STORE_KIND = 'sessionStorage'
+const tokenStore = () => { try { return window[TOKEN_STORE_KIND] } catch (e) { return null } }
+const readToken = () => { try { return tokenStore().getItem(TOKEN_STORAGE) || '' } catch (e) { return '' } }
+const writeToken = t => { try { tokenStore().setItem(TOKEN_STORAGE, t) } catch (e) {} }
+const dropToken = () => { try { tokenStore().removeItem(TOKEN_STORAGE) } catch (e) {} }
+const boardFetch = (url, opts = {}) => {
+  const token = readToken()
+  return fetch(url, token ? { ...opts, headers: { ...(opts.headers || {}), 'X-Board-Token': token } } : opts)
 }
 
 // Quotes are escaped too, not just tag characters: esc() output goes into
@@ -941,9 +962,14 @@ const sectionChip = (r, key, kind = 'section') => {
 
 // A picture, when prose cannot carry the thing. `shot` is a bare filename in
 // the board's own shots/ directory, never a path: see send_shot() in serve.py.
+// 2.4.0: a picture, and the link that opens it in a tab, cannot send the token header, so the report gives each picture a signed
+// address (`shotLinks`: shot/<name>?s=<expires>.<digest>, valid ten minutes). The markup is drawn with the address of that moment;
+// an address that has expired by the time the browser loads the picture (a lazy one, scrolled to late) or the link is pressed is
+// replaced by the newest one the poll has (see the two listeners after `poll`).
+const shotUrl = name => (current && current.shotLinks && current.shotLinks[name]) || `shot/${encodeURIComponent(name)}`
 const shot = (name, alt) => name
-  ? `<a class="shotlink" href="shot/${encodeURIComponent(name)}" target="_blank" rel="noopener">
-       <img class="shot" src="shot/${encodeURIComponent(name)}" loading="lazy"
+  ? `<a class="shotlink" data-shot="${esc(name)}" href="${esc(shotUrl(name))}" target="_blank" rel="noopener">
+       <img class="shot" data-shot="${esc(name)}" src="${esc(shotUrl(name))}" loading="lazy"
             alt="${esc(alt || 'screenshot')}"></a>`
   : ''
 
@@ -1129,8 +1155,8 @@ function optReview(opts){
       <div class="optreview-body">
         <div class="optreview-lab">${md(o.label)}${o.recommend ? '<span class="rectag">My pick</span>' : ''}</div>
         ${o.why ? `<div class="rsn">${md(o.why)}</div>` : ''}
-        ${o.shot ? `<a class="optshotlink" href="shot/${encodeURIComponent(o.shot)}" target="_blank" rel="noopener">
-          <img class="optshot" src="shot/${encodeURIComponent(o.shot)}" loading="lazy" alt="${esc(o.label || '')}">
+        ${o.shot ? `<a class="optshotlink" data-shot="${esc(o.shot)}" href="${esc(shotUrl(o.shot))}" target="_blank" rel="noopener">
+          <img class="optshot" data-shot="${esc(o.shot)}" src="${esc(shotUrl(o.shot))}" loading="lazy" alt="${esc(o.label || '')}">
           <span class="optshot-badge${o.recommend ? ' rec' : ''}">${id}</span>
         </a>` : ''}
       </div>
@@ -1152,12 +1178,12 @@ function optButtons(q, opts, project, brief){
       ${o.recommend ? '<span class="pick" title="Records at once. The only tap that skips the confirmation.">I&rsquo;d pick this</span>' : ''}
       ${!brief && o.why ? `<span class="rsn">${md(o.why)}</span>` : ''}
     </button>`
-  }).join('')}<button class="opt other"${busy} data-rec="0" data-other="1"
+  }).join('')}${q.other === false ? '' : `<button class="opt other"${busy} data-rec="0" data-other="1"
       data-project="${esc(project)}" data-q="${esc(q.q)}" data-a="">
     <span class="optid" aria-hidden="true">+</span>
     <span class="lab">Write my own answer</span>
     <span class="rsn hint">None of these fit, or the real answer is a qualification rather than a choice.</span>
-  </button></div>`
+  </button>`}</div>`
 }
 
 function questionBody(q, opts, project){
@@ -1275,6 +1301,7 @@ function answeredParts(r){
     `${shown.map(a => `<div class="ans">
       <div class="aq">${mdl(a.q)}</div>
       <div class="ac"><span class="chosetxt">${mdl(a.chose)}</span></div>
+      ${a.from === 'unmarked' ? `<div class="when">(not marked as sent by a browser)</div>` : a.from === 'network' ? `<div class="when">(sent from another device, by the network token)</div>` : ''}
       ${a.truncated ? `<div class="trunc">Cut at ${esc(String(a.truncatedAt))} of
         ${esc(String(a.originalLength))} characters. This is not the whole
         answer: read it from <code>answers.json</code>.</div>` : ''}
@@ -1979,6 +2006,7 @@ function draw(){
 }
 
 function drawParts(){
+  if(keyClosed){ paint($('alert'), closedHtml()); return }
   const r = current
   if(!r) return
   faults = []
@@ -2309,7 +2337,8 @@ async function answer(b, ev){
     showUnsaved(why, text)
   }
   try {
-    const res = await fetch('answer', {
+    const usedToken = readToken()
+    const res = await boardFetch('answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ q: question, answer: choice }),
@@ -2324,7 +2353,9 @@ async function answer(b, ev){
       // The server's own error strings are full sentences ending in a period;
       // the generic `HTTP ${status}` fallback is not. Strip, then add ours.
       let reason = `HTTP ${res.status}`
-      try { const j = await res.json(); if (j && j.error) reason = j.error } catch (e) {}
+      let closed = false
+      try { const j = await res.json(); if (j && j.error) reason = j.error; closed = !!(j && j.code === 'key') } catch (e) {}
+      if (closed) { if (readToken() === usedToken) dropToken(); showClosed(reason) }   // the board has closed itself to this tab: the banner, nothing else
       await lost(`NOT recorded on the board: ${reason.replace(/\.+$/, '')}.`)
     }
   } catch (e) {
@@ -2542,7 +2573,7 @@ document.addEventListener('click', async ev => {
   }
   if(t.closest('#composeCancel')) return $('compose').classList.remove('open')
   if((el = t.closest('[data-done]'))){
-    await fetch('backlog', {
+    await boardFetch('backlog', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: el.dataset.done, state: 'done' }),
@@ -2606,7 +2637,7 @@ document.addEventListener('submit', async ev => {
   const err = $('composeErr')
   err.textContent = ''
   try {
-    const res = await fetch('backlog', {
+    const res = await boardFetch('backlog', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: $('ttl').value, kind: $('kind').value, notes: $('notes').value }),
@@ -2656,6 +2687,7 @@ function stableKey(txt){
     const c = JSON.parse(txt)
     delete c.updatedAt
     delete c.freshness
+    delete c.shotLinks   // new signed addresses at every poll: not a change of what the board says
     if(c.orca) delete c.orca.ageSec
     ;(c.team || []).forEach(t => { delete t.lastMin })
     ;(c.backlog || []).forEach(b => { delete b.ageDays })
@@ -2667,6 +2699,28 @@ function stableKey(txt){
 
 let last = ''
 let inflight = false
+let keyClosed = false
+let closedWhy = ''
+const closedHtml = () => `<div class="alert"><b>This board is closed to this browser</b><p>${esc(closedWhy)}</p></div>`
+// The board answered `code: 'key'` (no token, or the token of a run that has ended): only the banner is on screen. The old board is not
+// kept under it (it may be the page of a program that held the port meanwhile) and no option can be tapped: the panes are cleared, the
+// body says `closed` (which hides what is left), and `drawParts` paints the banner and returns while this lasts, so that a repaint, or a
+// refused tap, cannot blank it.
+const showClosed = why => {
+  keyClosed = true
+  closedWhy = why || ''
+  current = null
+  document.body.classList.add('closed')
+  for(const id of ['lede', 'stamp', 'tabs', 'needs-main', 'pane-ws']) paint($(id), '')
+  for(const d of document.querySelectorAll('#crew, #answered, #more .sec')){   // <details>: emptied inside, as paintDetails fills them again
+    d.hidden = true
+    paint(d.querySelector('summary'), ''); paint(d.querySelector('.body'), '')
+  }
+  $('headline').textContent = '…'
+  document.title = 'status board'
+  $('tick').textContent = 'closed'; $('beacon').classList.add('off')
+  paint($('alert'), closedHtml())
+}
 
 async function poll(){
   if(inflight) return
@@ -2675,9 +2729,23 @@ async function poll(){
   let txt = null, ok = false
   // Only a report that did not arrive, or is not JSON, means "offline".
   try {
-    const res = await fetch('report.json?t=' + Date.now(), { cache: 'no-store' })
+    const used = readToken()   // the token this request carries (boardFetch reads the same one in the same tick)
+    const res = await boardFetch('report.json?t=' + Date.now(), { cache: 'no-store' })
     txt = await res.text()
-    current = JSON.parse(txt)
+    const body = JSON.parse(txt)
+    // 2.4.0: the board gives its report only to a browser that holds a token for it. Without one, or with one it no longer takes
+    // (30 days old, or from another key), say so in place of the board, forget the token, and keep asking: once the browser has been
+    // let in (the opener), the next poll draws the board. A forbidden answer from another machine says the same in its own words.
+    if((res.status === 401 || res.status === 403) && body && body.code === 'key'){
+      if(readToken() === used) dropToken()   // not a token that arrived while this request was out (the opener's, or a renewal)
+      showClosed(body.error)
+      inflight = false
+      return
+    }
+    if(keyClosed){ keyClosed = false; last = ''; document.body.classList.remove('closed') }   // it was closed and is not now: draw it again, whatever it holds
+    const renewed = res.ok && res.headers.get('X-Board-Token')   // a token a day old is replaced by the board: 30 days from the last visit
+    if(renewed) writeToken(renewed)
+    current = body
     ok = res.ok
   } catch (e) {
     tickEl.textContent = 'offline'; beacon.classList.add('off')
@@ -2705,6 +2773,22 @@ poll()
 setInterval(poll, POLL_MS)
 document.addEventListener('visibilitychange', () => { if(!document.hidden) poll() })
 window.addEventListener('focus', poll)
+
+// 2.4.0: a signed shot address lives ten minutes (see shotUrl). A picture that fails to load (its address expired before a lazy
+// load) is asked for again once, with the newest address the poll has; a link to a picture gets the newest address when it is
+// pressed. Plain listeners: the page's policy allows no inline handler.
+document.addEventListener('error', ev => {
+  const img = ev.target
+  if(!(img instanceof HTMLImageElement) || !img.dataset.shot || img.dataset.retried) return
+  img.dataset.retried = '1'
+  img.src = shotUrl(img.dataset.shot)
+}, true)
+const freshShotLink = ev => {
+  const link = ev.target instanceof Element ? ev.target.closest('a[data-shot]') : null
+  if(link) link.href = shotUrl(link.dataset.shot)
+}
+document.addEventListener('click', freshShotLink, true)
+document.addEventListener('auxclick', freshShotLink, true)
 </script>
 </body>
 </html>

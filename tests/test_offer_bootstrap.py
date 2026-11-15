@@ -711,10 +711,9 @@ def test_the_statusline_line_when_the_command_no_longer_carries_the_link_once_pe
     assert STATUS_LINE_LOST in first.out and first.out.rstrip().endswith("</board-link-statusline>"), said(first)
     for phrase in ("no longer carries the board's link", "above the prompt", "/project-init:board-link", "one sentence"):
         assert phrase in first.out, f"missing {phrase!r}:\n{first.out}"
-    # Review of 15 Nov 2026, finding 2: "The link is back above the prompt" is true only with the row switch on; with it off the row
-    # comes back once the status line's last mark is ten minutes old. The line must be true in both cases, so it says both.
-    assert "is back above the prompt" not in first.out, f"an unconditional claim about the row:\n{first.out}"
-    assert "at once" in first.out and "ten minutes" in first.out and "row" in first.out, f"it says when the row comes back, for both settings of the row switch:\n{first.out}"
+    # The button above the prompt is drawn whenever either switch is on, so the line says that it is still there: no rule about when a row comes back.
+    assert "is back above the prompt" not in first.out and "ten minutes" not in first.out and "comes back" not in first.out, f"the old rule of the row:\n{first.out}"
+    assert "button above the prompt is still there" in first.out and "whenever either board link switch is on" in first.out, f"it does not say that the button stays:\n{first.out}"
     assert "<board-link-offer>" not in first.out, "the owner was asked already: only the one line"
     assert run_hook(repo, orca=False, env=link_env(data, config)).silent, "once for this command"
     settings_for(config, "echo another command")

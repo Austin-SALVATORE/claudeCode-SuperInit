@@ -124,6 +124,7 @@ Standard library only.
 
 from __future__ import annotations
 
+import errno
 import hmac
 import html
 import http.client
@@ -148,10 +149,12 @@ FRONT_ENV = "STATUS_BOARD_FRONT_PORT"  # also how the tests keep clear of 8800
 POLL_ENV = "STATUS_BOARD_FRONT_POLL_S"  # tests only: the retry is 5 s in life
 DEFAULT_POLL_S = 5.0
 FRONT_HOST = "127.0.0.1"  # never 0.0.0.0: see the docstring
+FRONT_HOST6 = "::1"  # the door holds this one too: a program must not be able to shadow a live door on [::1] (a browser given `localhost` may try it first)
 SERVICE = "status-board-front-door"  # what `/_boards.json` says it is, so a probe can tell it from anything else
 PROBE_TIMEOUT_S = 0.5
 UP_CONNECT_TIMEOUT_S = 0.3
 KEY_FILE = "front.key"  # the secret of a home: see "WHO IS BELIEVED"
+BOARD_KEY_FILE = "board.key"  # a separate secret for a separate use (2.4.0): the owner's account's proof to a board's server
 # Who listens where is asked of lsof in ONE background thread, never by a request (the re-check of 14 Nov 2026,
 # findings 1 and 2): at most one lsof and one ps per LISTEN_MIN_INTERVAL_S while something has not been checked yet, and
 # one a minute (LISTEN_REFRESH_S) otherwise; after a failure, one per LISTEN_RETRY_S.
@@ -424,10 +427,10 @@ def plugin_version(here: Path) -> str | None:
 
 
 # ── the secret of a home, and asking whether a front door answers ─────
-def read_key(state: Path) -> bytes | None:
-    """The home's secret, or None when it cannot be trusted: missing, unreadable,
-    not a regular file of this account, or readable by anyone else."""
-    path = Path(state) / "servers" / KEY_FILE
+def read_key(state: Path, name: str = KEY_FILE) -> bytes | None:
+    """The home's secret `name` (the front door's `front.key` by default; a board's own is `board.key`), or None when it cannot be
+    trusted: missing, unreadable, not a regular file of this account, or readable by anyone else."""
+    path = Path(state) / "servers" / name
     try:
         st = path.stat()
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
@@ -450,23 +453,24 @@ def private_dir(path: Path) -> bool:
     return True
 
 
-def make_key(state: Path) -> bytes | None:
-    """The home's secret, made if there is none. Written whole to a temporary
+def make_key(state: Path, name: str = KEY_FILE) -> bytes | None:
+    """The home's secret `name`, made if there is none. Written whole to a temporary
     file and linked into place: `link` fails when the key exists, so boards that
-    start at once all end with the first one's key, and none reads half of one."""
-    existing = read_key(state)
+    start at once all end with the first one's key, and none reads half of one.
+    The same for any name: the front door's `front.key`, a board's `board.key` (32 random bytes, used as 64 hex characters)."""
+    existing = read_key(state, name)
     if existing:
         return existing
     folder = Path(state) / "servers"
     if not private_dir(folder):
         return None
-    tmp = folder / f"{KEY_FILE}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    tmp = folder / f"{name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(secrets.token_bytes(32))
         try:
-            os.link(tmp, folder / KEY_FILE)
+            os.link(tmp, folder / name)
         except FileExistsError:
             pass
     except OSError:
@@ -476,7 +480,7 @@ def make_key(state: Path) -> bytes | None:
             tmp.unlink()
         except OSError:
             pass
-    return read_key(state)
+    return read_key(state, name)
 
 
 def proof_for(key: bytes, challenge: str, port: int) -> str:
@@ -629,6 +633,8 @@ class FrontDoor:
         self.port = port or FRONT_PORT
         self.verify = verify  # tests give their sockets a check that says yes; None: the thread below asks lsof
         self.listeners = Listeners()
+        self.httpd = self.httpd6 = None  # the sockets this door holds (127.0.0.1, and ::1 when it could take it)
+        self.v6_state = None  # after the election: "held", "none" (no IPv6 loopback) or "other" (another program holds [::1])
 
     def ensure_key(self) -> bytes | None:
         return make_key(self.state)
@@ -643,6 +649,8 @@ class FrontDoor:
         class DoorServer(ThreadingHTTPServer):
             request_queue_size = LISTEN_QUEUE
             daemon_threads = True
+            allow_reuse_port = False  # the door's port is the door's alone while it runs (no SO_REUSEPORT)
+            address_family = socket.AF_INET6 if ":" in str(address[0]) else socket.AF_INET
 
         return DoorServer(address, self.handler())
 
@@ -804,12 +812,49 @@ class FrontDoor:
                 if stop.wait(retry):
                     return
                 continue
+            self.httpd = httpd
+            self.bind_loopback6()  # the first try is made here, before the board prints its start-up lines, so that they can say how it went
             if holding is not None:
                 holding.set()
+            closing = threading.Event()
+            threading.Thread(target=self.hold_loopback6, args=(closing, retry), daemon=True).start()
             try:
                 httpd.serve_forever()
             finally:
+                closing.set()
                 httpd.server_close()
+                if self.httpd6 is not None:
+                    self.httpd6.shutdown()
+                    self.httpd6.server_close()
+            return
+
+    def bind_loopback6(self) -> None:
+        """One try to hold `[::1]:<port>`, after this door has won the election on 127.0.0.1 (a door that lost never tries). It sets
+        `v6_state`: "held", "none" (this machine has no IPv6 loopback to hold: the door serves 127.0.0.1 alone and says nothing) or
+        "other" (another program holds that address: a browser given `localhost` may reach that program first, so the board says so)."""
+        if not socket.has_ipv6:
+            self.v6_state = "none"
+            return
+        try:
+            self.httpd6 = self.make_server((FRONT_HOST6, self.port))
+        except OSError as exc:
+            self.v6_state = "none" if exc.errno in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL) else "other"
+            return
+        self.v6_state = "held"
+
+    def hold_loopback6(self, closing: threading.Event, retry: float) -> None:
+        """Serve `[::1]:<port>` once it is held, trying again after each retry while another program has it, and quietly."""
+        while not closing.is_set():
+            if self.httpd6 is None:
+                if self.v6_state == "none" or closing.wait(retry):
+                    return
+                self.bind_loopback6()
+                continue
+            if closing.is_set():
+                self.httpd6.server_close()
+                self.httpd6 = None
+                return
+            self.httpd6.serve_forever()
             return
 
     # ── the handler ───────────────────────────────────────────────────
@@ -887,6 +932,7 @@ class FrontDoor:
                 if kind == "one":
                     row = found[0]
                     if row["up"]:
+                        # No query goes on to the board, whatever the request brought (2.4.0): no key travels in an address
                         return self.send(302, page("Moved", "<p>Going to the board.</p>"),
                                          extra={"Location": f"http://{FRONT_HOST}:{int(row['port'])}/"})
                     return self.send(503, door.down_page(row))

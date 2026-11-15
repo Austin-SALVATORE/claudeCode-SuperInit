@@ -405,8 +405,8 @@ def board_link_block(payload: dict, is_agent) -> None:
     if offer and board_link_claim(data / BOARD_LINK_OFFERED):
         print("<board-link-offer>")
         print(
-            "Once, and only now: the owner can choose where this plugin shows the board's link, above the "
-            "prompt (as now), in the status line, or both. Offer /project-init:board-link in one sentence. "
+            "Once, and only now: the board's button is above the prompt (as now), and the owner can also have the board's link "
+            "in the status line. Offer /project-init:board-link in one sentence. "
             "If they decline or do not answer, carry on and do not raise it again: the row above the prompt stays."
         )
         print("</board-link-offer>")
@@ -414,9 +414,8 @@ def board_link_block(payload: dict, is_agent) -> None:
         print("<board-link-statusline>")
         print(
             "The status line no longer carries the board's link (its command was rewritten, for example by "
-            "claude-hud's own set-up). The row above the prompt shows the link again: at once when the row option is on, and, if the "
-            "owner had turned the row off, once the status line's last showing of the link is ten minutes old. Tell the owner in one "
-            "sentence; /project-init:board-link puts it back in the status line."
+            "claude-hud's own set-up). The board's button above the prompt is still there, as it is whenever either board link "
+            "switch is on. Tell the owner in one sentence; /project-init:board-link puts the link back in the status line."
         )
         print("</board-link-statusline>")
 

@@ -1,17 +1,19 @@
 ---
 name: board-link
-description: Choose where the status board's short link shows, above the prompt, in the status line (claude-hud's or another), or both. Use when the owner runs /project-init:board-link, when a `<board-link-offer>` or `<board-link-statusline>` line asks for it, or when /project-bootstrap raises the question. Edits nothing without the owner's yes.
+description: Choose whether the status board's link is also in the status line (claude-hud's or another). The button that opens the board is always above the prompt. Use when the owner runs /project-init:board-link, when a `<board-link-offer>` or `<board-link-statusline>` line asks for it, or when /project-bootstrap raises the question. Edits nothing without the owner's yes.
 ---
 
-# Board link: where it shows
+# Board link: the button, and the link in the status line
 
-The board's short address, `http://localhost:8800/<name>`, shows in two places the owner can choose between: **a row above the
-prompt** (the plugin's mod, on by default) and **the status line** (a clickable `board` after the context usage, put there by
-a small filter that this skill adds after the owner's yes). The choice is two switches of the plugin's own, the plugin's
-options `board_link_row` ("Board link above the prompt", on by default) and `board_link_status_line` ("Board link in the status
-line", off by default). The owner can also change them in `/config` (search for "board link").
+The board's **button is always above the prompt** (the plugin's mod, on by default: one button, `9: board localhost:8800/<name>`, that
+opens the board in the owner's browser, with no link in it). **The status line** can carry a clickable `board` beside it, after the
+context usage, which leads to the board itself and only reaches a page that asks the owner to press the button; this skill puts it there,
+through a small filter, after the owner's yes. That link is an addition: it never replaces the button. The two switches of the plugin's own are
+the plugin's options `board_link_row` ("Board link above the prompt", on by default) and `board_link_status_line` ("Board link in the
+status line", off by default). **The button is drawn whenever either is on; only both off hides it, and the owner can do that in `/config`
+(search for "board link"). This skill never turns either switch off.**
 
-Nothing here is needed for the plugin to work: the row is the default, and claude-hud is optional. **The owner decides; you
+Nothing here is needed for the plugin to work: the button is the default, and claude-hud is optional. **The owner decides; you
 only ask, show and do what the owner says.** Ask in prose or with `AskUserQuestion`, one question at a time.
 
 ## The commands you use
@@ -45,19 +47,18 @@ chosen before and ask again anyway: this skill is asked for, not imposed.
 
 ## 2. The question
 
-One `AskUserQuestion`, header "Board link": **"Where should the board's link show?"**
+One `AskUserQuestion`, header "Board link": **"Should the board's link also be in the status line?"** Two answers; neither turns the button off.
 
-- **Above the prompt (as now).** "A row above the prompt: board http://localhost:8800/<name>. Nothing else to install."
-- **In the status line.** "A clickable 'board' in your status line, beside the context bar. It needs a status line: claude-hud (another author's plugin) or your own. The row stays until the status line shows the link."
-- **Both.**
+- **Above the prompt only (as now).** "One button above the prompt, 9: board localhost:8800/<name>, that opens the board; press it, or type 9 on an empty prompt. Nothing else to install."
+- **Also in the status line.** "The same button, and a clickable 'board' in your status line, beside the context bar. It needs a status line: claude-hud (another author's plugin) or your own. The button stays: the link is an addition, and it only reaches a page that asks you to press the button."
 
-## 3. If the answer is "Above the prompt"
+## 3. If the answer is "Above the prompt only"
 
 Set the switches (`board_link_row` true, `board_link_status_line` false). If `wrapped` is true, offer to take the link out of the
 status line: the "Take the link out of the status line" step below. Then `record --answer row`. Say what is now true, in one
 sentence.
 
-## 4. If the answer is "In the status line" or "Both"
+## 4. If the answer is "Also in the status line"
 
 Look at what `status` said:
 
@@ -76,7 +77,7 @@ Look at what `status` said:
     code `hand-made`). Offer to replace it with the plugin's (same place, same words; that script stays where it is). Run
     `add --replace-hand-made --dry-run`, then **show the old and the new command** exactly as it printed them, in code blocks, say
     in one sentence that only the filter is replaced, and ask: "Make this edit?" Yes or no. Without the owner's yes, leave the
-    command alone and say the row will show until the owner turns it off. **Do not run the edit itself before the owner's yes.**
+    command alone and say that the button above the prompt stays. **Do not run the edit itself before the owner's yes.**
   - If a dry run says `refused` for any other reason (the `hand-made` refusal is the case above), give the reason in one
     sentence, say "The row above the prompt stays.", set the switches for the row only, `record --answer row`, and stop. Nothing
     was written.
@@ -85,14 +86,13 @@ Look at what `status` said:
     prints the status line exactly as it came; a backup of `settings.json` is kept), and ask: "Make this edit?" Yes or no.
     **Do not run `add` before the owner's yes.**
 
-If the answer was "Both", the row stays on; if it was "In the status line", the row also stays on until the owner has seen the link
-(step 5). Either way, never switch the row off before the owner has seen the link in the status line.
+The button above the prompt stays on in every case: the status line's link is an addition, and this skill never switches the row off.
 
 ## After the owner's yes
 
 Only now. Run `python3 "${CLAUDE_PLUGIN_ROOT}/status-board/statusline_setup.py" add` (with `--replace-hand-made` after it only if the owner agreed to that), and read its JSON:
 
-- exit 0 and `written` true: the edit is made. Set `board_link_status_line` true (and leave `board_link_row` on). `record --answer status-line` (or `both` if that was the answer).
+- exit 0 and `written` true: the edit is made. Set `board_link_status_line` true (and leave `board_link_row` on). `record --answer both`.
 - exit 0 and `already` true: it was there; set the switches the same way.
 - exit 2: it was refused after all (it says why); nothing was written. Say "The row above the prompt stays." and `record --answer row`.
 - exit 1: say that it failed and nothing was written. Do not try again with other flags.
@@ -102,11 +102,9 @@ Only now. Run `python3 "${CLAUDE_PLUGIN_ROOT}/status-board/statusline_setup.py" 
 Tell the owner the link appears at the next refresh of the status line, a few seconds, right after the context usage. Ask: "Do you see
 `board` in your status line now?"
 
-- Yes, and the answer was "In the status line": offer to turn the row above the prompt off (`board_link_row` false). If the owner
-  agrees, set it and say that the row comes back by itself within ten minutes if the status line stops showing the link
-  (claude-hud's set-up rewrote the command, claude-hud was removed, Python is missing, the plugin is gone).
-- Yes, and the answer was "Both": nothing more.
-- No: do not switch anything off. Say that the row stays, that a status line refreshes every few seconds or on the next
+- Yes: nothing more. Do not offer to turn the button above the prompt off; the status line's link is an addition, and the button
+  stays whatever the status line shows (claude-hud's set-up may rewrite the command, claude-hud may be removed, Python may be missing).
+- No: do not switch anything off. Say that the button stays, that a status line refreshes every few seconds or on the next
   message, and that `/project-init:board-link` can take the link out again.
 
 ## Take the link out of the status line

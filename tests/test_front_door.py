@@ -682,13 +682,13 @@ def test_election_two_boards_one_holder_then_takeover_within_6s_after_kill():
         second = Board("beta", poll=None)
         time.sleep(0.5)
         holders = listeners(FRONT)
-        assert [pid for pid, _ in holders] == [first.proc.pid], f"one holder, the first: {holders}"
+        assert {pid for pid, _ in holders} == {first.proc.pid}, f"one holder, the first: {holders}"  # (2.4.0: its two loopback sockets)
         body = http_get(FRONT, "/")
         assert "alpha" in body and "beta" in body, body
         os.kill(first.proc.pid, signal.SIGKILL)
         killed = time.time()
         first.proc.wait()
-        took = wait_for(lambda: [p for p, _ in listeners(FRONT)] == [second.proc.pid] and door_state() == "door", 8)
+        took = wait_for(lambda: {p for p, _ in listeners(FRONT)} == {second.proc.pid} and door_state() == "door", 8)
         assert took is not None, f"nobody took the front door within 8 s: {listeners(FRONT)}"
         elapsed = time.time() - killed
         print(f"      takeover: {elapsed:.2f} s after kill -9 of the holder (default retry 5 s)")
@@ -754,7 +754,7 @@ def test_election_retries_quietly_when_port_held_by_non_board():
         blocker.close()
         took = wait_for(lambda: door_state() == "door", 5)
         assert took is not None, "the board never took the front door once it was free"
-        assert [pid for pid, _ in listeners(FRONT)] == [board.proc.pid]
+        assert {pid for pid, _ in listeners(FRONT)} == {board.proc.pid}  # one process (2.4.0: it holds 127.0.0.1 and ::1)
     finally:
         if blocker:
             blocker.close()
@@ -762,13 +762,14 @@ def test_election_retries_quietly_when_port_held_by_non_board():
             board.stop()
 
 
-def test_front_door_binds_127_0_0_1_only_even_when_board_binds_0_0_0_0():
+def test_front_door_binds_the_loopbacks_only_even_when_board_binds_0_0_0_0():
     board = None
     try:
         board = Board("lanboard", host="0.0.0.0")
         assert wait_for(lambda: door_state() == "door", 5) is not None, f"no front door: {board.lines} {board.err}"
         addresses = [addr for _, addr in listeners(FRONT)]
-        assert addresses and all(a == f"127.0.0.1:{FRONT}" for a in addresses), addresses
+        # 2.4.0 (plan 3.7 (4)): 127.0.0.1 and, where the machine has it, [::1]: never a wildcard, never another address
+        assert f"127.0.0.1:{FRONT}" in addresses and all(a in (f"127.0.0.1:{FRONT}", f"[::1]:{FRONT}") for a in addresses), addresses
         own = [addr for _, addr in listeners(board.port)]
         assert any(a.startswith("*:") for a in own), f"the board itself was asked for 0.0.0.0: {own}"
     finally:
@@ -1736,7 +1737,10 @@ def test_p5_the_short_addresses_resolve_as_before_old_door_and_new_side_by_side(
             assert kind_new == kind_old and [(r["slug"], r["port"], r["repo"]) for r in found_new] == [(r["slug"], r["port"], r["repo"]) for r in found_old], name
         # what the old one sent and the new one does not: the paths
         old_rows = json.loads(old_door.request("/_boards.json")[2])["boards"]
-        assert any("repo" in row for row in old_rows), "the stand-in for the old door must be the one that sent paths"
+        new_rows = json.loads(new_door.request("/_boards.json")[2])["boards"]
+        assert not any("repo" in row for row in new_rows), "the new door sends no paths"
+        assert {frozenset(r) for r in old_rows} == {frozenset(r) for r in new_rows} or any("repo" in row for row in old_rows), \
+            "the release before is 2.3.1 (the same rows as now) or 2.3.0 (the rows with paths)"
         # a board of either version probes a door of either version, and believes it
         assert FD().probe_state(new_door.port, world.state) == "door"
         assert old.probe_state(new_door.port, world.state) == "door", "an old board probing the new door"
@@ -1768,6 +1772,97 @@ def test_p7_the_readme_says_what_the_list_shows_and_that_it_holds_no_paths():
         "README.md does not say what the front door lists"
     assert re.search(r"no (?:folder|path)s? (?:of a project|is shown|are shown|leaves)|never (?:shows|sends|gives) (?:a|an|any) (?:absolute )?(?:folder )?path|holds no (?:folder )?paths?", text, re.I) or "no project path" in text, \
         "README.md does not say the door shows no paths"
+
+
+# ── release 2.4.0: the board's key, which no redirect carries ──────────────────────────────────────────────────────────────
+# A board answers only its own page, in the owner's account. The key is `servers/board.key`, made and read by the functions that make and
+# read the front door's `front.key`, given a file name. The door never adds a key of its own and passes on no query: the redirect to a board
+# carries no key.
+def test_k1_the_key_functions_take_a_file_name_and_the_default_is_as_before():
+    fd = FD()
+    world = World()
+    try:
+        state = world.state
+        front = fd.make_key(state)
+        assert front and len(front) == 32 and fd.read_key(state) == fd.read_key(state, "front.key") == front, "the default is front.key"
+        board = fd.make_key(state, "board.key")
+        assert board and len(board) == 32 and board != front, "a separate secret for a separate use"
+        path = state / "servers" / "board.key"
+        assert path.stat().st_mode & 0o777 == 0o600 and (state / "servers").stat().st_mode & 0o777 == 0o700, "0600 in a 0700 folder"
+        assert fd.read_key(state, "board.key") == board and fd.read_key(state) == front, "each name reads its own"
+        assert fd.make_key(state, "board.key") == board, "an existing key is kept"
+        assert re.fullmatch(r"[0-9a-f]{64}", board.hex())
+        os.chmod(path, 0o640)
+        assert fd.read_key(state, "board.key") is None, "a key readable by the group is refused, as front.key is"
+        os.chmod(path, 0o604)
+        assert fd.read_key(state, "board.key") is None, "so is one readable by everyone"
+        os.chmod(path, 0o600)
+        path.write_bytes(b"short")
+        assert fd.read_key(state, "board.key") is None, "so is one that is too short"
+        path.unlink()
+        assert fd.read_key(state, "nothere.key") is None
+        assert not list((state / "servers").glob("*.tmp")), "no temporary file is left"
+    finally:
+        world.close()
+
+
+def test_k2_boards_that_start_at_once_end_with_one_board_key():
+    fd = FD()
+    world = World()
+    try:
+        results, errors = [], []
+
+        def make() -> None:
+            try:
+                results.append(fd.make_key(world.state, "board.key"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=make) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors and len(results) == 12 and None not in results, (errors, results)
+        assert len(set(results)) == 1, "every board that started at once reads the first one's key"
+        assert (world.state / "servers" / "board.key").read_bytes() == results[0]
+    finally:
+        world.close()
+
+
+def test_k3_the_redirect_passes_no_query_on_whatever_the_request_brought():
+    """No key travels in an address (a terminal that draws no hyperlinks prints one, key and all): the door redirects to the board with no query, as before."""
+    world, door = served()
+    try:
+        rec = world.add("shopapp")
+        base = f"http://127.0.0.1:{rec['port']}/"
+        k = "ab" * 32
+        for path in (f"/shopapp?k={k}", f"/shopapp/?k={k}&x=1&y=%2Fetc%2Fpasswd", f"/shopapp?x=1&k={k}", "/shopapp?", "/shopapp?k="):
+            assert location(door, path) == (302, base), f"{path}: nothing of the query goes on"
+        status, headers, body = door.request(f"/shopapp?k={k}", method="HEAD")
+        assert status == 302 and headers["location"] == base and k not in "".join(headers.values()), (status, headers)
+        assert headers.get("referrer-policy") == "no-referrer"
+    finally:
+        door.close()
+        world.close()
+
+
+def test_k4_the_door_never_adds_a_key_and_never_writes_one_in_a_page_or_the_json():
+    fd = FD()
+    world, door = served()
+    try:
+        key = fd.make_key(world.state, "board.key")
+        world.add("shopapp")
+        world.add("notes-a")
+        world.add("notes-b")
+        world.add("gone", up=False)
+        for path in ("/shopapp", "/", "/_boards.json", "/_boards.json?c=" + "ab" * 16, "/nope", "/notes", "/gone"):
+            status, headers, body = door.request(path)
+            text = body + " ".join(f"{k}: {v}" for k, v in headers.items())
+            assert key.hex() not in text and "?k=" not in text and "board.key" not in text, (path, status, text[:300])
+    finally:
+        door.close()
+        world.close()
 
 
 def main() -> int:
