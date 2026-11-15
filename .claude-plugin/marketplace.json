@@ -11,7 +11,7 @@
     {
       "name": "project-init",
       "source": "./",
-      "description": "Scaffold a project's .claude/ team structure and start a live status board.",
+      "description": "Scaffold how a project is run under Orca and start a live status board.",
       "homepage": "https://github.com/Austin-SALVATORE/claudeCode-SuperInit"
     }
   ]

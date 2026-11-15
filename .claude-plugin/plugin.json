@@ -1,7 +1,7 @@
 {
   "name": "project-init",
-  "version": "2.1.0",
-  "description": "Bootstrap a project's .claude/ team structure — lead, architect, dev, QA, a subagent bench, and a live status board — so a new repository starts with a working practice instead of acquiring one.",
+  "version": "2.2.0",
+  "description": "Scaffold how a project is run under Orca and oh-my-claudecode (the operating model, the worker roster, the workstream register, the worker brief) and report to the owner on a live status board.",
   "author": {
     "name": "Austin Salvatore"
   },
@@ -10,8 +10,8 @@
   "keywords": [
     "bootstrap",
     "scaffold",
-    "agent-teams",
-    "subagents",
+    "orca",
+    "orchestration",
     "status-board",
     "verification"
   ],
