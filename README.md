@@ -331,15 +331,17 @@ subjects; do not bind it to anything else.
 
 Each board has its own port, derived from the project's path, which is
 the right thing for the board and hard for a person to keep in mind. So
-one address is fixed: `http://localhost:8800` lists every board and says
-whether it is up, and `http://localhost:8800/<name>` (the project's
+one address is fixed: `http://localhost:8800` lists every board by name,
+port and whether it is up (for a worktree, the name of its project) and
+shows no project path, and `http://localhost:8800/<name>` (the project's
 folder name, in any case, or the start of it when that is unique) sends
 the browser on to that project's own board. Nothing is installed or
 started for it: every board server tries to hold port 8800, whichever
 holds it serves the list, and when that board stops another takes over
 within five seconds. It only redirects, never proxies, so each board
 keeps its own origin and its own checks, and it listens on `127.0.0.1`
-only. A board that is down says so, with the command that starts it. A
+only. A board that is down says so, and says how it starts, without a
+folder. A
 board gets its name once its server has been started again on this
 version; until then its port address works as before. The port is
 `STATUS_BOARD_FRONT_PORT`; boards in a home set by `STATUS_BOARD_HOME`
