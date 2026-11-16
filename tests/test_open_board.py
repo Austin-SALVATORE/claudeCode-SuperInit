@@ -74,6 +74,16 @@ FRONT_PORT = free_port()
 # restarts the board when the server on the port is this project's own recorded server, and says so when something else holds the port
 PROOF_FAIL = ("Start a new session in this project: it restarts this board if the server on this port is this project's own, and if something else "
               "holds the port, that session says so. This port is not answering as this project's board, so nothing was opened.")
+# what is true when the opener's own connect failed, when the board gave no answer, and when it answered in a way no board does: none of them promises
+# a restart, because the hook that starts a board at the start of a session restarts on a statement by the listener only
+UNASKED_SENTENCE = ("Try the button once more: this computer could not connect to the board just now, so nothing was opened. Nothing was stopped, "
+                    "and the board may be running.")
+MUTE_SENTENCE = ("Try the button once more in a moment: the board accepts a connection but gave no answer, so nothing was opened. If it stays like this its "
+                 "server is hung: stop it (its process id is in this board's file in the servers folder of the status-board home), then start a new "
+                 "session in this project.")
+ODD_SENTENCE = ("Nothing was opened: the program on this port answers the proof in a way this board never does. If it is this project's board and it is "
+                "wrong, stop its server (its process id is in this board's file in the servers folder of the status-board home), then start a new "
+                "session in this project.")
 SERVERS: list = []
 
 
@@ -643,12 +653,17 @@ def test_a_listener_that_does_not_prove_it_gets_no_form_and_nothing_is_opened():
     with 1 MB, that hangs, that drips: no form, nothing opened, exit 1, the one sentence, within seconds."""
     modes = ["wrong", "upper", "replay", "other_run", "no_run", "run_upper", "run_short", "run_long", "run_not_text", "run_with_colon",
              "not_json", "other_shape", "no_proof_field", "empty", "refused_503", "refused_400", "redirect", "big", "hang", "drip"]
+    # what the opener says follows what the listener did: a statement (no proof route, no usable key, another key) gets the sentence that promises a
+    # restart by the hook; an answer no board gives and no answer in time each get a sentence of their own, which promises no restart
+    odd = {"refused_400", "redirect", "big"}
+    mute = {"hang", "drip"}
     for mode in modes:
         world = World(proof=mode)
         started = time.time()
         done = world.run("--cleanup-after", "30")
         took = time.time() - started
-        assert done.returncode == 1 and done.stdout == PROOF_FAIL + "\n" and done.stderr == "", (mode, done.returncode, done.stdout, done.stderr)
+        expected = ODD_SENTENCE if mode in odd else MUTE_SENTENCE if mode in mute else PROOF_FAIL
+        assert done.returncode == 1 and done.stdout == expected + "\n" and done.stderr == "", (mode, done.returncode, done.stdout, done.stderr)
         assert not world.forms() and not world.opener_args(), f"{mode}: a form was written or the opener was run"
         assert took < 6, f"{mode}: it took {took:.1f} s"
         assert world.key_hex not in done.stdout + done.stderr
@@ -656,11 +671,28 @@ def test_a_listener_that_does_not_prove_it_gets_no_form_and_nothing_is_opened():
             assert len(world.proof_server.requests) == 1, "the redirect was followed"
 
 
-def test_nothing_listening_on_the_port_gives_the_same_sentence():
+def test_nothing_listening_on_the_port_says_the_board_is_not_running():
+    """The connection is refused: the one error that says nothing listens, so the sentence is the board's not running (a session start brings it back),
+    not the one about a port that does not prove itself."""
     world = World(proof=None)  # the record's pid is alive; no program holds the port
     done = world.run("--cleanup-after", "30")
-    assert done.returncode == 1 and done.stdout == PROOF_FAIL + "\n" and done.stderr == "", (done.returncode, done.stdout, done.stderr)
+    assert done.returncode == 1 and done.stdout == SENTENCES["down"] + "\n" and done.stderr == "", (done.returncode, done.stdout, done.stderr)
     assert not world.forms() and not world.opener_args()
+
+
+def test_a_connect_that_fails_gets_its_own_sentence_and_nothing_is_opened():
+    """The opener's own connect fails with an error other than refused (injected in its process: nothing is exhausted): the machine could not ask, so the
+    sentence says so and says to try again; it does not say the port is not answering as this project's board, and it opens nothing."""
+    world = World(proof="right")
+    inject = Path(tempfile.mkdtemp(dir=TMP, prefix="inject-"))
+    (inject / "sitecustomize.py").write_text(
+        "import errno, os, socket\n_real = socket.socket.connect\n\n\ndef connect(self, address):\n"
+        "    if isinstance(address, tuple) and address[1] == int(os.environ['INJECT_PORT']):\n"
+        "        raise OSError(errno.EADDRNOTAVAIL, os.strerror(errno.EADDRNOTAVAIL))\n    return _real(self, address)\n\n\nsocket.socket.connect = connect\n")
+    done = world.run("--cleanup-after", "30", PYTHONPATH=str(inject), INJECT_PORT=str(world.port))
+    assert done.returncode == 1 and done.stdout == UNASKED_SENTENCE + "\n" and done.stderr == "", (done.returncode, done.stdout, done.stderr)
+    assert not world.forms() and not world.opener_args(), "nothing was written or opened"
+    assert "not answering as this project's board" not in done.stdout
 
 
 def test_the_proof_is_bound_to_the_port_the_run_and_the_challenge():

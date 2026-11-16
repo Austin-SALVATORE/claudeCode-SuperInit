@@ -48,7 +48,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/revive-board.py\"",
-            "timeout": 15
+            "timeout": 25
           }
         ]
       }

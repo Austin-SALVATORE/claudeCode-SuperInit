@@ -13,12 +13,13 @@ sends as a header to its own address (there is no cookie: a cookie would go to e
   2. It reads the key with `front_door.read_key`, which refuses a key that is not the owner's, is readable by anyone else, or is too short.
   2b. It asks the port to PROVE it is this project's board, before anything is written or posted (version 2 of the proof): one
      `GET /_proof?c=<c>` to `127.0.0.1:<port>`, `c` being 32 random hex characters made for this run, with `Host: 127.0.0.1:<port>`, a
-     deadline of 2 seconds in all, no redirect followed, at most 1 kB read. The board answers 200 `application/json` with
+     connection of 1 second at most and then an exchange of 2 seconds in all, no redirect followed, at most 1 kB read. The board answers 200 `application/json` with
      `{"run": "<run>", "proof": "<64 lowercase hex>"}`: `run` is 16 lowercase hex characters that the server made when it started (not a
      secret; it changes at each start) and `proof` the HMAC-SHA256 over the ASCII string `proof:v2:<port>:<run>:<c>` with the same RAW key.
      The opener checks the shape of `run`, computes the digest with the `run` it was given and compares with `hmac.compare_digest` (a
      constant-time comparison). On anything but a match (a refusal, no answer, a timeout, another shape, a missing or malformed run, a wrong
-     digest) it writes no form, opens nothing, says that the port is not answering as this project's board and exits 1. This closes the
+     digest) it writes no form, opens nothing, says in one sentence what it found (the port does not answer as this project's board; or this
+     machine could not connect; or the board gave no answer; or it answered in a way no board does) and exits 1. This closes the
      gap of a record whose pid is alive but is not the board (a reused pid): another program that holds the port cannot prove it, so it
      never receives the token. The request carries no secret: it is a GET with a random challenge, so the program that gets it learns
      nothing it can use (the digest it would have to make needs the key).
@@ -105,8 +106,22 @@ NOT_PROVEN = ("Start a new session in this project: it restarts this board if th
 # An exception of the opener's own: not a board that is down, not a key. Never a traceback and never the exception's text.
 FAILED = ("Try the button once more, and tell the session if it happens again: the opener stopped on a problem of its own, so nothing "
           "was opened.")
-PROOF_DEADLINE = 2.0  # seconds, for the whole exchange
+# The listener said what the session-start hook acts on (an older board, no usable key, another key): that hook restarts the board when the server on
+# the port is this project's own, so the promise is made for these three kinds only. The three that follow say nothing of a restart, because the hook
+# does not restart on them: the machine could not ask (the hook's own failure, never a fact about the board), the board gave no answer, or it answered
+# in a way no board does. None of them promises more than trying again, and what to do by hand first.
+UNASKED = ("Try the button once more: this computer could not connect to the board just now, so nothing was opened. Nothing was stopped, "
+           "and the board may be running.")
+MUTE = ("Try the button once more in a moment: the board accepts a connection but gave no answer, so nothing was opened. If it stays like this its server "
+        "is hung: stop it (its process id is in this board's file in the servers folder of the status-board home), then start a new session in this project.")
+ODD = ("Nothing was opened: the program on this port answers the proof in a way this board never does. If it is this project's board and it is wrong, "
+       "stop its server (its process id is in this board's file in the servers folder of the status-board home), then start a new session in this project.")
+SENTENCE_FOR_KIND = {"old": NOT_PROVEN, "nokey": NOT_PROVEN, "wrong": NOT_PROVEN, "unasked": UNASKED, "mute": MUTE, "odd": ODD, "free": NOT_RUNNING}
+CONNECT_DEADLINE = 1.0  # seconds, to make the connection
+PROOF_DEADLINE = 2.0  # seconds, for the whole exchange once the connection is made
 PROOF_MAX_BYTES = 1024
+# Kinds the hook acts on: the listener itself said it (in an HTTP answer), as opposed to nothing having been said.
+STATEMENTS = ("old", "nokey", "wrong")
 # The cleaner: its code and the number of seconds are on its command line, which every account's `ps` shows; the form's path (it holds the nonce
 # `n`) is NOT: the opener writes it to the cleaner's standard input. It removes that one file, and only a file named like a form of ours.
 CLEANER = ("import os, sys, time\npath = sys.stdin.readline().strip()\ntime.sleep(float(sys.argv[1]))\n"
@@ -131,66 +146,118 @@ def board_proves_itself(key: bytes, port: int) -> str | None:
     return run if kind == "proven" else None
 
 
-def proof_outcome(key: bytes, port: int) -> tuple[str, str | None]:
-    """The same one request as `board_proves_itself`, told apart by what came back, as (kind, run); `run` only for `proven`:
+def _reason_of(exc: BaseException) -> str:
+    """The words for an error of the connection itself: the operating system's, or `timed out`."""
+    if isinstance(exc, TimeoutError):
+        return "timed out"
+    return getattr(exc, "strerror", None) or type(exc).__name__
 
-      proven  200, application/json, a 16-hex `run`, and the digest only the key makes for that run, that port and this challenge;
-      old     404, or 200 with the page or with anything that is not that JSON: no proof route (a 2.3.1 server, or not a board);
-      nokey   503: a server of this release that has no usable key;
-      wrong   200 in the right shape with a digest that is not the key's: an older key, or not the board;
-      silent  a timeout, a redirect, any other status, more than 1 kB, a refused or reset connection: not proven, and nothing more is known.
 
-    The hook that starts a board at the start of a session uses the kind to decide whether the board is to be restarted. Never an exception: 2 seconds
-    in all (a watchdog shuts the socket), no redirect followed, 1 kB at most, no secret sent."""
+def connect_kind(port: int, timeout: float = CONNECT_DEADLINE) -> tuple[str, "socket.socket | None", str]:
+    """Open the connection to `127.0.0.1:<port>` before any HTTP is spoken, and say what happened, as (kind, socket, detail):
+
+      connected  the connection was made: the socket, ready to speak on;
+      free       the connection was REFUSED: nothing listens, and that is the one error that is knowledge about the port;
+      unasked    the connect itself failed in any other way (no source port to use, no descriptor, no buffer, not permitted, no route, a timeout
+                 before the connection was made): the machine, or this process, could not ask. That says nothing about what is on the port, and
+                 nothing may be concluded from it; `detail` is the operating system's words for it.
+
+    Never raises. The hook that starts a board at the start of a session and the opener use this one function, so that an error of their own is never
+    read as a fact about the board."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(port)), timeout=timeout)
+    except ConnectionRefusedError:
+        return "free", None, ""
+    except OSError as exc:
+        return "unasked", None, _reason_of(exc)
+    except Exception as exc:  # noqa: BLE001 - anything else that goes wrong before the connection exists is the asker's failure
+        return "unasked", None, _reason_of(exc)
+    return "connected", sock, ""
+
+
+def proof_outcome_detail(key: bytes, port: int) -> tuple[str, str | None, str]:
+    """The same one request as `board_proves_itself`, told apart by what came back, as (kind, run, detail); `run` only for `proven`:
+
+      proven   200, application/json, a 16-hex `run`, and the digest only the key makes for that run, that port and this challenge;
+      old      404, or 200 with the page or with anything that is not that JSON: no proof route (a 2.3.1 server, or not a board);
+      nokey    503: a server of this release that has no usable key;
+      wrong    200 in the right shape with a digest that is not the key's: an older key, or not the board;
+      odd      an answer that no board of this plugin gives (a redirect, another status, more than 1 kB, not HTTP at all); `detail` says which;
+      mute     connected, and then no complete answer in time or a reset: something is there and does not answer;
+      unasked  the connect itself failed, other than refused (`connect_kind`): the asker's own failure; `detail` is the system's words for it;
+      free     the connection was refused: nothing listens.
+
+    `old`, `nokey` and `wrong` are statements by the listener, in an HTTP answer. `odd` is a statement too, of a kind no board makes. `mute` and
+    `unasked` are the absence of one, and the absence can be the asker's own: a caller that acts on a statement (stops a process) acts on none of
+    those. The connection is 1 second at most and the exchange 2 seconds in all (a watchdog shuts the socket), no redirect followed, 1 kB at most,
+    no secret sent. Never an exception."""
+    kind, sock, detail = connect_kind(port)
+    if sock is None:
+        return kind, None, detail
     challenge = secrets.token_hex(16)
     conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=PROOF_DEADLINE)
-    held: list = []  # the socket, kept here: `conn.sock` is None once the answer is being read (Connection: close)
+    conn.sock = sock  # the connection made above: http.client speaks on it and does not connect again
+    sock.settimeout(PROOF_DEADLINE)
 
     def cut() -> None:
-        for sock in held:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     watchdog = threading.Timer(PROOF_DEADLINE, cut)
     watchdog.daemon = True
     watchdog.start()
     try:
-        conn.connect()
-        held.append(conn.sock)
         conn.request("GET", f"/_proof?c={challenge}", headers={"Host": f"127.0.0.1:{int(port)}", "Connection": "close", "Accept": "application/json"})
         answer = conn.getresponse()
         if answer.status == 404:
-            return "old", None
+            return "old", None, ""
         if answer.status == 503:
-            return "nokey", None
+            return "nokey", None, ""
         if answer.status != 200:
-            return "silent", None  # a redirect, a refusal of another kind: nothing is known
+            return "odd", None, f"status {answer.status}"  # a redirect, a refusal of another kind
         if not answer.getheader("Content-Type", "").lower().startswith("application/json"):
-            return "old", None  # the page (or anything that is not that JSON): there is no proof route
+            return "old", None, ""  # the page (or anything that is not that JSON): there is no proof route
         body = answer.read(PROOF_MAX_BYTES + 1)
         if len(body) > PROOF_MAX_BYTES:
-            return "silent", None
+            return "odd", None, "more than 1 kB"
+        declared = answer.getheader("Content-Length", "")
+        if declared.isdigit() and len(body) < int(declared):
+            return "mute", None, ""  # the connection ended (or the watchdog cut it) before the answer it announced was complete: no answer was given
         try:
             data = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeError):
-            return "old", None
+            return "old", None, ""
         run = data.get("run") if isinstance(data, dict) else None
         given = data.get("proof") if isinstance(data, dict) else None
         if not isinstance(run, str) or not re.fullmatch(r"[0-9a-f]{16}", run):
-            return "old", None
+            return "old", None, ""
         if not isinstance(given, str) or not re.fullmatch(r"[0-9a-f]{64}", given):
-            return "old", None
+            return "old", None, ""
         expected = proof_digest(key, port, run, challenge)
         if hmac.compare_digest(given.encode("ascii"), expected.encode("ascii")):
-            return "proven", run
-        return "wrong", None
-    except (OSError, http.client.HTTPException, ValueError, UnicodeError):
-        return "silent", None
+            return "proven", run, ""
+        return "wrong", None, ""
+    except (http.client.RemoteDisconnected, http.client.IncompleteRead, OSError):
+        return "mute", None, ""  # connected, and then no complete answer in time, or a reset
+    except (http.client.HTTPException, ValueError, UnicodeError):
+        return "odd", None, "not an HTTP answer"
+    except Exception:  # noqa: BLE001 - never an exception; what it was is not known, so no statement
+        return "mute", None, ""
     finally:
         watchdog.cancel()
         conn.close()
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def proof_outcome(key: bytes, port: int) -> tuple[str, str | None]:
+    """`proof_outcome_detail` without the words: (kind, run)."""
+    kind, run, _detail = proof_outcome_detail(key, port)
+    return kind, run
 
 
 def find_row(start: Path):
@@ -280,9 +347,9 @@ def main() -> int:
         key = front_door.read_key(state, front_door.BOARD_KEY_FILE)
         if key is None or len(key) != KEY_BYTES:
             return say(NO_KEY)
-        run = board_proves_itself(key, int(row["port"]))
-        if run is None:
-            return say(NOT_PROVEN)
+        kind, run = proof_outcome(key, int(row["port"]))
+        if kind != "proven" or run is None:
+            return say(SENTENCE_FOR_KIND.get(kind, NOT_PROVEN))
         nonce = secrets.token_hex(8)
         token = browser_token(key, row["port"], run, int(time.time()))
         path = write_form(servers, form_for(row["port"], token, nonce), nonce)
