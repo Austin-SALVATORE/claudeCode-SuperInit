@@ -119,26 +119,35 @@ was a dead URL. `hooks/revive-board.py` checks at session start whether the
 project has a board (`boards/<slug>/narrative.json`) and whether anything
 answers on its port:
 
-- nothing is listening: `serve.py` is started, detached, and one line
-  prints the URL;
+- the connection is refused (the one error that says nothing listens):
+  `serve.py` is started, detached, and one line prints the URL;
 - something answers: the hook asks it for its proof (`GET /_proof`, which only
   the holder of `servers/board.key` can answer, the same request the button's
-  opener makes). A board that proves itself: nothing happens. A server that
-  cannot prove itself (a board of an older release, one with no usable key,
-  one that holds an older key, one that does not answer) is stopped with one
-  SIGTERM and the board is started again, one line saying so, but only when
-  the process is this project's own recorded server: its record
-  `servers/<port>.json` is a regular file of yours naming this project and a
-  loopback board, its pid is alive and yours, it is the process that listens
-  on the port, and its command line is `python .../status-board/serve.py
-  --repo <this project>`. All five are measured, and measured again right
-  before the signal. Anything else that holds the port (another program,
-  another project's server, another account's process, a board in phone mode)
-  gets one line that says so and is never stopped, and so does anything that
-  cannot be confirmed; a server that ignores SIGTERM is reported, never killed
-  by force; a board is restarted at most once in ten minutes. A key that
-  others can read is reported too (no proof can be checked, and a restart
-  cannot help).
+  opener makes). A board that proves itself: nothing happens. A server is
+  stopped with one SIGTERM, and the board started again with one line saying
+  so, only when two things hold. The server itself said, in an HTTP answer
+  on each of two separate connections, that it cannot prove itself: a board
+  of an older release (no proof route), one with no usable key, or one that
+  holds an older key. And the process is this project's own recorded server:
+  its record `servers/<port>.json` is a regular file of yours naming this
+  project and a loopback board, its pid is alive and yours, it is the process
+  that listens on the port, and its command line is `python
+  .../status-board/serve.py --repo <this project>`. All five are measured,
+  and measured again right before the signal. Nothing else ever leads to a
+  signal: not a hang, a reset, an answer no board gives, or a connection the
+  hook could not make (no source port to give it, no descriptor, a filter: the
+  hook's own failure, which says nothing about the board). Each of those gets
+  one line that says what the hook saw and is never a stop. When the hook
+  cannot connect, it reads the record: a recorded pid that is dead means the
+  board is not running and the hook starts it; a live pid, or no record,
+  means one line saying it could not check. After a stop the hook waits for
+  the process to be gone, not for the port, and then starts the board.
+  Anything else that holds the port (another program, another project's
+  server, another account's process, a board in phone mode) gets one line
+  that says so and is never stopped, and so does anything that cannot be
+  confirmed; a server that ignores SIGTERM is reported, never killed by force;
+  a board is restarted at most once in ten minutes. A key that others can read
+  is reported too (no proof can be checked, and a restart cannot help).
 
 The slug and port are `serve.py`'s own. The hook imports `slug_for` and
 `port_for` rather than copying them, so the two cannot drift. The server
@@ -205,9 +214,9 @@ your settings, unchanged by updates, and changeable at any time in `/config`
 | **Board link in the status line** | off: nothing is put in your status line until you ask; when it is on, the link is an addition beside the button |
 
 The button above the prompt is shown whenever either switch is on: the status
-line's link is an addition beside it and never replaces it (that link only
-reaches a page that asks you to press the button, which is how a board is
-opened). That link is a real OSC 8 hyperlink where the terminal supports them
+line's link is an addition beside it and never replaces it (that link is the
+board's own address, which opens the board in whichever browser it is opened
+in). That link is a real OSC 8 hyperlink where the terminal supports them
 (iTerm2, Ghostty, WezTerm, kitty: command-click or ctrl-click), and plain text
 `board` elsewhere. Only both switches off hides the button, and that is your choice too:
 nothing is shown.
@@ -350,25 +359,50 @@ The server is read-only against your repository and binds to
 `127.0.0.1` only. It exposes repo paths, branch names and commit
 subjects; do not bind it to anything else.
 
-A board answers only its own page, in your account. It keeps its data
-(`report.json`, the shots) and every write behind a key, `servers/board.key`
-in the status-board home: 0600, in a 0700 folder, so another account on the
-machine, or a program that can reach the network and not your files, cannot
-read it. The key is in no link, no address and no text that Claude Code
-draws: the row above the prompt is a button, and the status line
-links the board itself, `http://127.0.0.1:<port>/`, never `localhost` (a
+A board opens by its address in any browser on this machine, from the status
+line's link, a bookmark or a typed address; any program running on this
+machine can then read it, and record an answer to a question it asks by
+sending the board's own headers. To have each browser tab opened from Claude
+Code instead (2.4.0's lock), create the empty file
+`~/.claude/status-board/board-lock`; delete it to open boards by address
+again. A running board follows the file at its next request: no restart,
+nothing to reload.
+
+What a board keeps checking whether the lock is on or off: a request must be
+addressed to this machine by one of its own names (a web site that points a
+name of its own at `127.0.0.1` reads nothing); a read is refused when the
+browser says it comes from another site or from another port of this machine
+(a dev server open in the same browser); a write must be JSON, with the
+board's own `Origin`, and goes only to a question the board asks (one shown in
+the last 30 minutes); an answer sent without a browser's same-page mark shows
+as "not marked as sent by a browser", and the session confirms it with you
+before it acts on anything hard to undo; the board cannot be framed by another
+site; the front door tells no path, and the status-board home is closed to
+other accounts (0700, files 0600). A board started with `--host` also takes
+answers from the network with the printed token, which is not a proof of you:
+the board records them as coming from the network, and the session confirms
+them with you in the same way.
+
+The lock, when you turn it on, is the 2.4.0 behaviour. The board keeps its
+data (`report.json`, the shots) and every write behind a key,
+`servers/board.key` in the status-board home: 0600, in a 0700 folder, so
+another account on the machine, or a program that can reach the network and
+not your files, cannot read it. The key is in no link, no address and no text
+that Claude Code draws: the row above the prompt is a button, and the status
+line links the board itself, `http://127.0.0.1:<port>/`, never `localhost` (a
 browser given `localhost` may try `::1` first, where another program can
-listen), and neither holds a key. Your browser never gets the key either: it gets a token for that one
-board, from a small opener (`status-board/open_board.py`): click **board** in
-the row above the prompt (a click needs fullscreen rendering; otherwise type
-the digit 9 into an empty prompt, which presses it and is not typed, or press
-ctrl+x then Tab, Tab to the button and Enter), or tell the session "open the
-board". A board is opened from Claude Code for each browser tab. The opener
-writes a form that only your account can read and that holds the token, never
-the key; before it writes the form it asks the board's port to prove it holds
-the key (one request with a random challenge, carrying no secret); if the port
-does not prove it, nothing is opened and the opener says so, so the form's
-token is never posted to another program that happens to hold that port. It hands the
+listen), and neither holds a key. Your browser never gets the key either: it
+gets a token for that one board, from a small opener
+(`status-board/open_board.py`): click **board** in the row above the prompt (a
+click needs fullscreen rendering; otherwise type the digit 9 into an empty
+prompt, which presses it and is not typed, or press ctrl+x then Tab, Tab to
+the button and Enter), or tell the session "open the board". With the lock on,
+a board is opened from Claude Code for each browser tab. The opener writes a
+form that only your account can read and that holds the token, never the key;
+before it writes the form it asks the board's port to prove it holds the key
+(one request with a random challenge, carrying no secret); if the port does
+not prove it, nothing is opened and the opener says so, so the form's token is
+never posted to another program that happens to hold that port. It hands the
 file to your system's opener, which opens it as a new document, in a tab of
 its own (its name is new each time), where the form posts it to the board; the
 file is then removed. The token is bound to that run of the board (a new id
@@ -376,21 +410,14 @@ each time the board starts), so a program that takes a stopped board's port
 and keeps what it was sent holds nothing the board will take when it is back.
 The board's own page keeps the token in that tab's own storage and sends it as
 a header to its own address, so no other tab and no server on another port
-receives it (a cookie would go to every one of them). A program that takes
-the port of a stopped board can still be sent the token by a tab that stays
-open, but it belongs to the run that ended: no board will take it, now or when
-the board is back. A token dies with that
-run of the board and with its tab: a reload keeps working, and a new tab, a
-bookmark or the status line's link shows a page that asks you to open the
-board from Claude Code. A write is accepted only from the board's
-own page, with its `Origin`, and only to a question the board asks. An answer
-recorded without the browser's same-page mark shows as "not marked as sent by
-a browser", and the session confirms it with you before it acts on anything
-hard to undo. A board started with `--host` also takes answers from the
-network with the printed token, which is not a proof of you: the board records
-them as coming from the network, and the session confirms them with you in the
-same way. Restart each running board once after updating: a board of an
-older release ignores the key and stays as open as it was.
+receives it (a cookie would go to every one of them). A program that takes the
+port of a stopped board can still be sent the token by a tab that stays open,
+but it belongs to the run that ended: no board will take it, now or when the
+board is back. A token dies with that run of the board and with its tab: a
+reload keeps working, and, with the lock on, a new tab, a bookmark or the
+status line's link shows a page that asks you to open the board from Claude
+Code. Restart each running board once after updating: a board of an older
+release has no switch, and ignores the key.
 
 A new session in the project restarts a board that holds no key or does not
 answer as its project's board, when its server is the project's own (see "A

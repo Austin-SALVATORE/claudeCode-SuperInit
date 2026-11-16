@@ -185,6 +185,12 @@ SHOT_SIGNATURE = re.compile(r"([1-9][0-9]*)\.([0-9a-f]{64})")
 HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 PAGE_SCRIPT = re.compile(r"<script>(.*?)</script>", re.S)
+# The lock of release 2.4.0 (a token per tab, made by the opener, with the banner for a browser that has none) is an OPTION, off unless the
+# owner turns it on: the empty file `board-lock` in the status-board home. Absent (the default): a board opens by its address in any browser on
+# this machine, and a request from this machine needs no token. Present, as anything at that path (a file, a link, a folder), or when the
+# path cannot be looked at: the lock is on, as in 2.4.0. It is looked at for each request that needs a token (`key_ok`), with one `lstat`,
+# so a running board follows the file at once, with no restart. Every other check of a request stays in both states.
+LOCK_FILE = "board-lock"
 LAN_DENY_SENTENCE = "Not authorised. Open the address printed by the server, including ?k=, once for each tab."
 SHOT_REFUSED_SENTENCE = "This picture's address has expired or is not this board's; the page asks again."
 
@@ -1512,6 +1518,17 @@ def write_refusal(headers, from_loopback: bool, names: frozenset[str]) -> tuple[
     return host_refusal(headers, from_loopback, names)
 
 
+def lock_on() -> bool:
+    """Is the lock of 2.4.0 on? True when anything is at `STATE/board-lock`, and also when that cannot be looked at (it fails towards on)."""
+    try:
+        os.lstat(STATE / LOCK_FILE)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def make_handler(board: Board, token: str | None = None, board_key: bytes | None = None, port: int = 0, run: str | None = None, reread_key=None):
     """The handler of one board's server.
 
@@ -1566,14 +1583,16 @@ def make_handler(board: Board, token: str | None = None, board_key: bytes | None
         def key_ok(self) -> bool:
             """May this caller read the board's report or write to it?
 
-            From this machine: only with a valid token for THIS board in the `X-Board-Token` header, which the board's own page sends
-            and which the opener makes from the board key (only the owner's account can read that: a program of another account, or
-            one kept away from the owner's files, cannot). Cookies are ignored and nothing reads a token from an address. From another
-            machine: the phone's LAN token, in the same header, and nothing else."""
+            From this machine: with the lock off (no `board-lock` file in the home: the default) yes, and the page needs no token; with
+            the lock on, only with a valid token for THIS board in the `X-Board-Token` header, which the board's own page sends and which
+            the opener makes from the board key (only the owner's account can read that: a program of another account, or one kept away
+            from the owner's files, cannot). Cookies are ignored and nothing reads a token from an address. Whatever the lock, a valid
+            token is still noted (for the renewal) and every other check of the request (the host, the site, the origin, the question)
+            is made by the caller. From another machine: the phone's LAN token, in the same header, and nothing else."""
             self._token_age = None
             if self.from_this_machine():
                 self._token_age = token_age(self.header_token(), board_key, port, run)
-                return self._token_age is not None
+                return self._token_age is not None or not lock_on()
             return bool(token) and self.same_secret(self.header_token(), token)
 
         def refuse_site(self) -> bool:

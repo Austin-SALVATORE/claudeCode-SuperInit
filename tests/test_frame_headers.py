@@ -76,6 +76,9 @@ def setup() -> None:
     (board / "narrative.json").write_text(json.dumps(NARRATIVE))
     (board / "shots" / "planted.svg").write_text(PICTURE_SVG)
     (board / "shots" / "dot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    # Release 2.4.1: the lock of 2.4.0 is on only where the empty file `board-lock` is in the home (off is the default: a board opens by its
+    # address). This suite is about the frame headers of every kind of response, including the refusals the lock sends, so its home has the file.
+    (HOME_DIR / "board-lock").write_text("")
     shutil.copytree(BOARD_DIR, TREE, ignore=shutil.ignore_patterns("__pycache__"))
     (TREE / "sub").mkdir()  # a folder, to get a redirect and a listing out of the static handler
     (TREE / "sub" / "note.txt").write_text("a plain file\n")
