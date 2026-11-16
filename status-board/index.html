@@ -347,7 +347,17 @@
   .q.recorded .q-num{color:var(--green)}
   .q.recorded .q-text{color:var(--ink3);font-weight:400}
   .q-ans{grid-column:2;margin-top:var(--s1);font:500 var(--t-body)/1.45 var(--text);max-width:var(--measure);
-    overflow-wrap:anywhere}
+    overflow-wrap:anywhere;--fold:3}
+  /* An answer in the owner's own words can be forty lines, and this row
+     stays for fifteen minutes: unfolded it took most of the screen (the
+     owner, 16 Nov 2026). It is folded to three lines, the rest one press
+     away. The stamp is tilted and lands with a bounce, and both reach past
+     the answer's box, so this fold is not cut at its edges like the others:
+     only what lies under its last line is taken away (`clip-path`), and the
+     lines that are taken away make the page no longer (`contain`: without
+     it the window could be scrolled down into the room they would fill). */
+  .q-ans.clamp{overflow:visible;contain:layout;clip-path:inset(-100vmax -100vmax 0 -100vmax)}
+  .q-head>.linkish{grid-column:2;justify-self:start}
   .stampmark{display:inline-block;margin-right:var(--s2);padding:2px 7px;border:1.6px solid var(--green);
     border-radius:4px;color:var(--green);font:700 var(--t-meta)/1.25 var(--disp);letter-spacing:.03em;
     transform:rotate(-2deg);white-space:nowrap}
@@ -402,9 +412,11 @@
     font:600 var(--t-body)/1.45 var(--text);max-width:var(--measure)}
   .ans .ac::before{content:"";flex:none;width:11px;height:6px;margin-top:7px;
     border-left:2px solid var(--green);border-bottom:2px solid var(--green);transform:rotate(-45deg)}
-  /* The owner's own line breaks are kept, and a very long answer scrolls in
-     its box instead of setting the height of the page. */
-  .chosetxt{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:380px;overflow-y:auto}
+  /* The owner's own line breaks are kept. A long answer is folded to five
+     lines, with the rest one press away. (Until 16 Nov 2026 it scrolled in a
+     box of 380px: most of a small window, and still not the whole answer.) */
+  .ac-body{min-width:0}
+  .chosetxt{white-space:pre-wrap;overflow-wrap:anywhere}
   .ans .an{margin-top:var(--s2);color:var(--ink3);max-width:var(--measure);overflow-wrap:anywhere}
   .ans .when{margin-top:var(--s1);font:400 var(--t-meta)/1.3 var(--text);color:var(--ink3)}
   .trunc{margin-top:var(--s2);padding:var(--s2) var(--s3);border:1px dashed var(--warn);border-radius:8px;
@@ -1012,11 +1024,17 @@ function paint(el, html){
 // Long text in a list of cards is folded to a few lines, with the rest one
 // tap away, so eight cards can be read down as eight cards. Nothing is
 // dropped, and the control shows only where text is actually cut.
-const fold = (key, html, cls) => {
+const fold = (key, html, cls, more = 'Read all of it') => {
   const open = ui.unfolded.has(key)
   return `<div class="${cls} fold${open ? '' : ' clamp'}" data-clamp="fold">${html}</div>
-    <button class="linkish" data-fold="${esc(key)}"${open ? '' : ' hidden'}>${open ? 'Show less' : 'Read all of it'}</button>`
+    <button class="linkish" data-fold="${esc(key)}"${open ? '' : ' hidden'}>${open ? 'Show less' : more}</button>`
 }
+// An answer the owner wrote is folded the same way, where it is shown: in the
+// row left in the queue after it is recorded, and in the Answered drawer. Its
+// control says what it opens. A key is kept on one line, because it rides in
+// an attribute, where a line break does not survive reliably.
+const ANSWER_MORE = 'Show the whole answer'
+const oneLine = s => String(s == null ? '' : s).replace(/\s+/g, ' ')
 
 // ── headline ──────────────────────────────────────────────────────────
 // The headline is a display line. When an agent writes a paragraph into it,
@@ -1232,11 +1250,15 @@ function needsHtml(r){
   const list = rows.map(row => {
     if(row.rec){
       const fresh = Date.now() - row.rec.at < 1500
+      // Written unfolded, with its control hidden: fitStamped() folds it and
+      // shows the control only where folding takes a line away.
+      const foldKey = 'recorded:' + oneLine(row.key)
       return `<li class="q recorded">
         <div class="q-head">
           <span class="q-num" aria-hidden="true">✓</span>
           <span class="q-text">${md(row.key)}</span>
-          <span class="q-ans"><span class="stampmark${fresh ? ' fresh' : ''}">Recorded ${esc(clock(row.rec.at))}</span>${md(row.rec.answer)}</span>
+          <span class="q-ans fold" data-clamp="stamped"><span class="stampmark${fresh ? ' fresh' : ''}">Recorded ${esc(clock(row.rec.at))}</span>${md(row.rec.answer)}</span>
+          <button class="linkish" data-fold="${esc(foldKey)}" hidden>${ui.unfolded.has(foldKey) ? 'Show less' : ANSWER_MORE}</button>
         </div>
       </li>`
     }
@@ -1295,12 +1317,15 @@ function answeredParts(r){
   const [answered, sorted] = newestFirst(r.answered || [])
   if(!answered.length) return ['', '']
   const shown = ui.all.has('answered') ? answered : answered.slice(0, SHORT_LIST)
+  // What the owner unfolded is remembered by the question, not by its place:
+  // a new answer arrives at the head of this list and moves every other one.
+  const keys = foldKeys('answer', answered, a => oneLine(a.q))
   return [
     `<span>Answered</span><span class="count">${answered.length}</span>
       <span class="drawer-hint">your rulings so far${sorted ? ', ' + sorted : ''}</span>`,
-    `${shown.map(a => `<div class="ans">
+    `${shown.map((a, at) => `<div class="ans">
       <div class="aq">${mdl(a.q)}</div>
-      <div class="ac"><span class="chosetxt">${mdl(a.chose)}</span></div>
+      <div class="ac"><div class="ac-body">${fold(keys[at], mdl(a.chose), 'chosetxt', ANSWER_MORE)}</div></div>
       ${a.from === 'unmarked' ? `<div class="when">(not marked as sent by a browser)</div>` : a.from === 'network' ? `<div class="when">(sent from another device, by the network token)</div>` : ''}
       ${a.truncated ? `<div class="trunc">Cut at ${esc(String(a.truncatedAt))} of
         ${esc(String(a.originalLength))} characters. This is not the whole
@@ -2086,11 +2111,29 @@ function paintKeepingFocus(el, html){
   return true
 }
 
+// The answer in a recorded row carries its stamp, which is tilted and lands
+// with a bounce. Both reach past the answer's box, and a box that is measured
+// by what overflows it takes the stamp for text that is cut: an answer of one
+// line would get a control. So this one is measured by its own height, whole
+// and then folded. It is folded, and has its control, only where folding
+// takes a line away; a short answer has no fold on it at all, and is drawn
+// exactly as it was before answers could be folded.
+function fitStamped(el, toggle){
+  el.classList.remove('clamp')
+  const whole = el.getBoundingClientRect().height
+  el.classList.add('clamp')
+  const cut = el.getBoundingClientRect().height < whole - 1
+  el.classList.toggle('clamp', cut && !ui.unfolded.has(toggle.dataset.fold))
+  toggle.hidden = !cut
+}
+
 // A "read more" control is offered only where text is actually cut.
 function fitClamps(){
   document.querySelectorAll('[data-clamp]').forEach(el => {
     const toggle = el.nextElementSibling
-    if(!toggle || !el.classList.contains('clamp')) return
+    if(!toggle) return
+    if(el.dataset.clamp === 'stamped') return fitStamped(el, toggle)
+    if(!el.classList.contains('clamp')) return
     toggle.hidden = el.scrollHeight <= el.clientHeight + 1
   })
   // The headline and the line under it share one control.
