@@ -79,6 +79,7 @@ KEY_SENTENCE = KEY_SENTENCES[STORE]
 OPEN_REFUSED_SENTENCE = "This opening has expired; click the board in the row of this project's session again."
 SHOT_REFUSED_SENTENCE = "This picture's address has expired or is not this board's; the page asks again."
 LAN_DENY_START = "Not authorised."
+LOCK_FILE = "board-lock"  # the empty file in the status-board home that turns the lock of 2.4.0 on (release 2.4.1)
 PAGE_POLICY_REST = "style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'"
 TOKEN_LIFE = 30 * 86400
 HOME_SENTENCE_START = "The status-board home is not private to this account and cannot be made so"
@@ -159,13 +160,15 @@ class Scratch:
 
     _n = 0
 
-    def __init__(self, decisions: list | None = None, name: str = "demo") -> None:
+    def __init__(self, decisions: list | None = None, name: str = "demo", lock: bool = True) -> None:
         Scratch._n += 1
         self.root = Path(tempfile.mkdtemp(dir=TMP, prefix=f"s{Scratch._n}-"))
         self.home = self.root / "home"
         self.name = name
         self.repo = self.root / name
         self.add_project(name, decisions)
+        if lock:  # release 2.4.1: the lock of 2.4.0 is on only where the file `board-lock` is in the home; the tests of 2.4.0 run with it
+            (self.home / LOCK_FILE).write_text("")
 
     def add_project(self, name: str, decisions: list | None = None) -> Path:
         repo = self.root / name
@@ -1184,7 +1187,7 @@ def test_home_the_server_makes_its_boards_private_at_start_and_what_it_writes_af
         assert post(server, "/backlog", {"title": "x"}, key=key).status == 201
         for file in (board / "answers.json", board / "backlog.json", home / "servers" / f"{server.port}.json"):
             assert modes(file) == 0o600, f"{file.name}: written by the server, {modes(file):o}"
-        assert not [p for p in home.rglob("*") if p.is_file() and not p.is_symlink() and modes(p) & 0o077 and "previews" not in p.parts], "no file of a board is open to others"
+        assert not [p for p in home.rglob("*") if p.is_file() and not p.is_symlink() and modes(p) & 0o077 and "previews" not in p.parts and p.name != LOCK_FILE], "no file of a board is open to others"
 
 
 def test_home_a_home_that_cannot_be_made_private_is_not_served_and_the_sentence_is_fixed():
@@ -2207,6 +2210,14 @@ def test_page_when_the_board_answers_key_only_the_banner_is_on_screen():
     assert page.count("showClosed(") >= 2, "the poll and a refused answer close the page the same way"
 
 
+def test_page_a_closed_tab_that_opens_again_redraws_its_headline():
+    """With the lock switched on and off under an open tab (release 2.4.1) the tab closes and then recovers with no reload: the headline it
+    cleared must be cleared through `paint()`, which remembers what an element holds, or the next draw takes it for unchanged and leaves "…"
+    (found by the browser check `measure-open.js`)."""
+    page = (TREE / "index.html").read_text()
+    assert "paint($('headline'), '…')" in page and "$('headline').textContent = '…'" not in page
+
+
 def test_other_a_question_moved_to_answered_is_served_so_and_a_tap_on_it_is_still_taken():
     """A question that moves to the answered list, at request level: the agent moves a question from `decisions` to `answered` in the narrative; the
     next read of the report has it under answered and not under decisions, and a tap on it within 30 minutes is still taken
@@ -2295,6 +2306,200 @@ def test_home_a_file_that_vanishes_while_the_home_is_made_private_is_not_an_erro
     with mock.patch.object(os, "lstat", lstat):
         serve.make_home_private(state)
     assert stat.S_IMODE(kept.stat().st_mode) == 0o600, "the rest was made private"
+
+
+# ── release 2.4.1: a board opens by its address; the lock of 2.4.0 is an option, off unless the file `board-lock` is in the home ────────────────
+# Every test above runs with the lock ON (`Scratch()` makes the file, as the owner would with `touch`): 2.4.0 exactly as it was. The tests below
+# run with it OFF (`Scratch(lock=False)`, the default of the product): from this machine the report and the writes need no token, and every
+# other check stays.
+def lock_off_scratch(decisions: list | None = None) -> Scratch:
+    scratch = Scratch(decisions, lock=False)
+    assert not (scratch.home / LOCK_FILE).exists()
+    return scratch
+
+
+def test_lock_off_report_without_token_200():
+    """With no `board-lock`, a plain read of the report from this machine is answered: no token, a wrong token and a token of another run alike;
+    a picture still needs its signed address (which the report gives), and the report names none of the key."""
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        for label, headers in (("no header", {}), ("a wrong token", {"X-Board-Token": "v2.0.0.0.x"}), ("the key as text", {"X-Board-Token": scratch.key()})):
+            reply = get(server, "/report.json", headers=headers)
+            assert reply.status == 200 and reply.json["headline"] == HEADLINE, f"{label}: {reply.status}"
+            assert not reply.header("x-board-token"), "nothing renews where no token came"
+        report = get(server, "/report.json").json
+        assert "dot.png" in report["shotLinks"]
+        assert get(server, "/" + report["shotLinks"]["dot.png"]).status == 200, "its signed address loads the picture"
+        assert get(server, "/shot/dot.png").status == 401, "a picture with no signed address is still refused"
+        assert scratch.key() not in get(server, "/report.json").text
+
+
+def test_lock_off_answer_with_own_origin_to_asked_question_201():
+    """The page's own write, with no token at all: recorded, marked `browser` when the browser's mark came; the backlog's `done` likewise."""
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        reply = post(server, "/answer", {"q": "Ship it?", "answer": "yes"})
+        assert reply.status == 201 and reply.json["item"]["from"] == "browser", (reply.status, reply.text)
+        assert scratch.answers()["Ship it?"]["answer"] == "yes"
+        assert get(server, "/report.json").json["answered"][0]["q"] == "Ship it?", "and the board shows it"
+
+
+def test_lock_off_answer_without_origin_403_foreign_origin_403():
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}, origin=False).status == 403, "no Origin"
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}, origin="https://example.invalid").status == 403, "a foreign Origin"
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}, origin=f"http://127.0.0.1:{server.port + 1}").status == 403, "another port of this machine"
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}, site="cross-site").status == 403, "a browser that says it is another site"
+        assert Reply(*server.raw("POST", "/answer", {"Content-Type": "text/plain", "Origin": server.origin}, b'{"q":"Ship it?","answer":"yes"}')).status in (400, 403, 415), "not JSON"
+        assert scratch.answers() == {}
+
+
+def test_lock_off_unasked_question_409():
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        reply = post(server, "/answer", {"q": "Never asked?", "answer": "yes"})
+        assert reply.status == 409 and scratch.answers() == {}, (reply.status, reply.text)
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}).status == 201, "a question the board asks is taken"
+
+
+def test_lock_off_same_site_read_403():
+    """A page of another port of this machine (a dev server open in the same browser) or another site cannot read the board through the
+    owner's browser: the browser says so with `Sec-Fetch-Site`, and the board refuses; an address typed or a bookmark (`none`) and the
+    board's own page (`same-origin`) are served."""
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        for site, status in (("same-site", 403), ("cross-site", 403), ("same-origin", 200), ("none", 200)):
+            assert get(server, "/report.json", headers={"Sec-Fetch-Site": site}).status == status, site
+            shot = get(server, "/" + get(server, "/report.json").json["shotLinks"]["dot.png"], headers={"Sec-Fetch-Site": site})
+            assert shot.status == (403 if status == 403 else 200), f"a picture, {site}"
+
+
+def test_lock_off_foreign_host_403():
+    """DNS rebinding: a name that a web site points at 127.0.0.1 reads nothing, for the page, the report and the writes."""
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        evil = {"Host": f"evil.example:{server.port}"}
+        assert get(server, "/report.json", headers=evil).status == 403
+        assert get(server, "/", headers=evil).status == 403
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}, headers=evil).status == 403
+        assert scratch.answers() == {}
+        assert get(server, "/report.json", headers={"Host": f"localhost:{server.port}"}).status == 200, "its own names are served"
+
+
+def test_lock_off_another_machine_still_needs_lan_token():
+    """The phone mode is the same in both modes: another machine reads and writes only with the printed token."""
+    address = lan_address()
+    if address is None:
+        raise Skip("this machine has no address other than loopback, so a request cannot arrive as a stranger")
+    scratch = lock_off_scratch()
+    with running(scratch, host="0.0.0.0") as server:
+        token = (scratch.home / "lan-token").read_text().strip()
+        phone = f"http://{address}:{server.port}"
+        assert lan_reply(server, address, "GET", "/report.json", None, phone).status == 403, "no token from the network"
+        assert lan_reply(server, address, "GET", "/report.json", scratch.key(), phone).status == 403, "the key as a token"
+        assert lan_reply(server, address, "GET", "/report.json", token, phone).status == 200
+        assert lan_reply(server, address, "POST", "/answer", None, phone, {"q": "Ship it?", "answer": "x"}, **{"Sec-Fetch-Site": "same-origin"}).status == 403
+        assert scratch.answers() == {}
+        assert get(server, "/report.json").status == 200, "this machine, in phone mode too, needs no token while the lock is off"
+
+
+def test_lock_off_page_shows_board_without_banner():
+    """The page holds no data, sends a token only when it has one, and shows the banner only on a refusal with `code: 'key'`, which a board
+    with the lock off never sends to this machine; the browsers are measured in `evidence-open-by-address/browser`."""
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        page = get(server, "/").text
+        assert "code === 'key'" in page and "X-Board-Token" in page
+        for _ in range(3):
+            reply = get(server, "/report.json?t=1", headers={"Sec-Fetch-Site": "same-origin", "Origin": server.origin})
+            assert reply.status == 200 and "code" not in reply.json, "the poll of a tab with no token is answered, so no banner"
+        assert get(server, "/_proof?c=" + "a" * 32).status == 200, "the proof is answered in both modes (the session-start hook asks it)"
+
+
+def test_lock_off_unmarked_answer_gets_confirm_line():
+    """An answer sent without a browser's same-page mark is stored `unmarked` and the session is told to confirm it with the owner before it
+    acts on anything hard to undo: the one thing left of a plain client's write, in both modes."""
+    scratch = lock_off_scratch()
+    with running(scratch) as server:
+        reply = post(server, "/answer", {"q": "Ship it?", "answer": "yes"}, site=None)
+        assert reply.status == 201 and reply.json["item"]["from"] == "unmarked", (reply.status, reply.text)
+        entry = scratch.answers()["Ship it?"]
+        assert entry["from"] == "unmarked"
+    sys.path.insert(0, str(TREE)) if str(TREE) not in sys.path else None
+    import answer_ledger  # noqa: PLC0415 - the copy under test
+
+    block = answer_ledger.format_block([("Ship it?", entry)])
+    assert "not marked as sent by a browser" in block and "Confirm it with the owner" in block, block
+
+
+def test_lock_off_a_board_with_no_usable_key_still_serves():
+    """The key is for the lock and for the opener's proof and the signed pictures. A key that is not private no longer closes the board where
+    the lock is off: the report and the writes work (pictures wait for a key, and the proof answers 503, as before)."""
+    scratch = lock_off_scratch()
+    (scratch.home / "servers").mkdir(parents=True, mode=0o700)
+    scratch.key_path.write_bytes(bytes(range(32)))
+    os.chmod(scratch.key_path, 0o644)
+    with running(scratch) as server:
+        assert get(server, "/report.json").status == 200
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}).status == 201
+        assert get(server, "/_proof?c=" + "a" * 32).status == 503
+
+
+def test_switch_on_running_board_takes_effect_at_next_request():
+    """`board-lock` in the home turns the lock on for a board that is already running, and deleting it turns it off: no restart, nothing to
+    reload. Anything at that path counts as present (a file, a link, a folder); the writes keep every other check in both states."""
+    scratch = lock_off_scratch()
+    lock = scratch.home / LOCK_FILE
+    with running(scratch) as server:
+        assert get(server, "/report.json").status == 200
+        lock.write_text("")
+        refused = get(server, "/report.json")
+        assert refused.status == 401 and refused.json["code"] == "key" and refused.json["error"] == KEY_SENTENCE, (refused.status, refused.text)
+        assert post(server, "/answer", {"q": "Ship it?", "answer": "yes"}).status == 401 and scratch.answers() == {}
+        token = make_token(scratch.raw_key(), server.port, run=server.run)
+        assert get(server, "/report.json", headers={"X-Board-Token": token}).status == 200, "with the lock on a token works as in 2.4.0"
+        lock.unlink()
+        assert get(server, "/report.json").status == 200 and post(server, "/answer", {"q": "Ship it?", "answer": "yes"}).status == 201
+        scratch.answers()
+        for label, make in (("a folder", lambda: lock.mkdir()), ("a symbolic link to nothing", lambda: lock.symlink_to(scratch.root / "nowhere"))):
+            make()
+            assert get(server, "/report.json").status == 401, f"{label} counts as present"
+            if lock.is_dir() and not lock.is_symlink():
+                lock.rmdir()
+            else:
+                lock.unlink()
+            assert get(server, "/report.json").status == 200, f"{label} removed: off again"
+
+
+def test_lock_on_a_board_started_with_the_file_is_2_4_0():
+    """With the file present at start, a request with no token is refused with the banner's code, a token of the run opens, and the opener's
+    way in (`/_open`) works: 2.4.0 as it was (the whole suite above runs in this state)."""
+    scratch = Scratch()
+    assert (scratch.home / LOCK_FILE).exists()
+    with running(scratch) as server:
+        refused = get(server, "/report.json")
+        assert refused.status == 401 and refused.json["code"] == "key"
+        assert get(server, "/report.json", headers={"X-Board-Token": make_token(scratch.raw_key(), server.port, run=server.run)}).status == 200
+        assert post_open(server, opener_form(scratch, server)).status == 200
+
+
+def test_words_the_lock_is_one_constant_and_the_words_say_what_the_default_is():
+    """One constant names the file, `serve.py` reads it at each request that needs a token, and README and the skill say what is now true:
+    a board opens by its address; the lock is the empty file `board-lock`."""
+    code = (TREE / "serve.py").read_text()
+    assert re.search(r'^LOCK_FILE = "board-lock"$', code, re.M), "the constant"
+    assert code.count("LOCK_FILE") >= 2 and "def lock_on" in code
+    for name in ("README.md", "skills/status-board/SKILL.md"):
+        text = (PLUGIN / name).read_text()
+        assert "board-lock" in text, f"{name} names the file"
+        assert "opens by its address" in text, f"{name} says the default"
+        flat = " ".join(text.split())
+        for stale in ("A board is opened from Claude Code for each browser tab", "A board is opened from Claude Code, once for each browser tab",
+                      "that address alone shows a page that asks for it", "That address only reaches a page that asks",
+                      "which is how a board is opened)"):
+            assert stale not in flat, f"{name}: {stale!r} is not true of the default"
+        assert not re.search(r"(?<!lock on, )a new tab, a bookmark or the status line's link shows a page that asks", flat), f"{name}: said without the lock"
 
 
 # ── runner ────────────────────────────────────────────────────────────────────────────────────────────────────────────

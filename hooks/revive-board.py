@@ -11,24 +11,35 @@ What it does, in order:
   1. The project has a board — boards/<slug>/narrative.json exists — or stop. The
      project is the folder the session was started in, found as every hook finds it.
   2. Probe the board's port (the one serve.py itself derives):
-       nothing is listening    -> start serve.py, detached, and print the URL;
-       something answers       -> ask it for its PROOF (below);
+       the connection is refused -> start serve.py, detached, and print the URL (a refused connection is the one error
+                                    that says nothing listens);
+       the connect itself fails  -> the hook could not ask (no source port, no descriptor, a filter: `unasked`). The port
+                                    says nothing then, so the record decides: a recorded pid that is dead (or a zombie)
+                                    means the board is not running and it is started; a pid that is alive, or no record,
+                                    means one line saying the hook could not check, and nothing is stopped or started;
+       something answers         -> ask it for its PROOF (below);
   3. The proof. A board of this release answers `GET /_proof?c=<32 hex>` with an
      HMAC that only the holder of `servers/board.key` can make (the same request the
-     opener makes: one request, 2 seconds in all, no redirect, 1 kB, nothing secret sent).
+     opener makes: a connection of 1 second at most, an exchange of 2 seconds, no redirect, 1 kB, nothing secret sent).
        proven (the digest is the key's)          -> do nothing, say nothing;
        the key file is not private               -> stop nothing, say what to do: no proof can be
                                                     checked, and a restart cannot help (a new server
                                                     refuses that key too);
-       no key file, or no proof (an older server, a server with no usable key, an older key,
-       no answer)                                -> decide whether the process on the port is THIS
-                                                    BOARD'S OWN server (below). If it is, stop it
-                                                    and start the board again; if it is not, or if
-                                                    that cannot be established, say so and stop nothing.
+       old, nokey or wrong (no proof route, no usable key, a digest the key does not make; a missing key file
+       is asked with a key that cannot match)    -> STATEMENTS by the listener, in an HTTP answer. Only these can
+                                                    lead to a stop, and only when the same is said on a second,
+                                                    separate connection and the process is THIS BOARD'S OWN
+                                                    server (below);
+       odd (a redirect, another status, over 1 kB)  -> one line, nothing stopped;
+       mute (connected, then no answer in time, or a reset)  -> one line, nothing stopped;
+       unasked (the connect failed)              -> as above: the record decides, nothing is stopped.
 
-THE RULE above every other: a process is signalled only when all five facts below were established, and
-again right before the signal. Anything that cannot be established means report, stop nothing. A hook that stops
-the wrong process is the fault this must not have. The five facts, each measured:
+THE RULE above every other: a process is signalled only when (a) all five facts below were established, and again right
+before the signal, AND (b) the process said `old`, `nokey` or `wrong` in an HTTP answer on two separate connections.
+Silence, a hang, a reset, a failed connect or an odd answer never lead to a signal: the absence of an answer can be the
+hook's own (the machine had no source port to give it), and a healthy board was once stopped for that and not started
+again. Anything that cannot be established means report, stop nothing. A hook that stops the wrong process is the
+fault this must not have. The five facts, each measured:
   F1  the record `servers/<port>.json` in the status-board home: a regular file of this account, in a
       folder that is this account's and closed to others; `service` is `status-board`, `port` is the
       derived port, `repo` is this project's folder, `pid` an integer above 1, `host` is 127.0.0.1;
@@ -48,12 +59,16 @@ A board started in phone mode (`host` is not 127.0.0.1) is reported and not rest
 How it is stopped and started: one SIGTERM, to the pid, through ONE function (`signal_process`), after the record
 and the facts were measured twice. On Linux the signal goes through a pidfd opened before the second measure, so a
 pid reused in between cannot receive it. Where there is no pidfd (macOS), the window between the second measure and
-`kill` is a few milliseconds: accepted, and stated here. It waits up to 3 seconds for both the pid to be gone and the
-port to be free; a server that ignores SIGTERM is not the server this hook knows, so it is reported and never
-killed by force. Then `start()` as before, and the proof is asked once more: still not proven is said once and not
-tried again. At most one restart per board in ten minutes (the file boards/<slug>/.revive-restarted, made 0600 just
-before the signal); the whole check, stop and start run under the lock boards/<slug>/.revive.lock, and a lock that
-cannot be made means stop nothing (the plain start of a free port still starts anyway, as before).
+`kill` is a few milliseconds: accepted, and stated here. It waits up to 3 seconds for the PID to be gone (the process
+no longer exists, or it is a zombie that nothing has collected: it holds nothing and is gone for every purpose), and
+for nothing else: the port cannot be asked about, because the hook's own connect may be what fails. A server that
+ignores SIGTERM (alive after 3 seconds, not a zombie) is not the server this hook knows, so it is reported and never
+killed by force. Once the pid is gone the board is started, whatever the port reads: the start needs no connect
+(`serve.py` binds, or exits and says the port is held). Then the proof is asked once more: still not proven is
+said once and not tried again; a board that is up but cannot be checked (the hook cannot connect) is said so. At most one
+restart per board in ten minutes (the file boards/<slug>/.revive-restarted, made 0600 just before the signal);
+the whole check, stop and start run under the lock boards/<slug>/.revive.lock, and a lock that cannot be made
+means stop nothing (the plain start of a free port still starts anyway, as before).
 
 serve.py's own `slug_for`, `port_for` and `STATE` are imported, not copied, so
 the hook cannot drift from the server: the port is a crc32 of the whole resolved
@@ -83,8 +98,9 @@ Limits, stated rather than hidden:
   * It runs in every session type; it is idempotent, and a teammate starts after its lead, by which time the
     board is up.
 
-Never blocks the session for long: connections time out in under a second, the proof in two, the wait for a stopped
-server in three and for a new one in a few more, and every path exits 0. When it cannot start the board it prints one
+Never blocks the session for long: a connection times out in a second, the proof's exchange in two, the wait for a stopped
+server's pid in three and for a new one in a few more (about 14 seconds on the longest path, inside the hook's 25), and
+every path exits 0. When it cannot start the board it prints one
 line pointing at the log; it never fails silently into "the board is probably up". Run by hand with:
     echo '{"cwd": "/path/to/project"}' | python3 hooks/revive-board.py
 """
@@ -118,7 +134,9 @@ TOOL_TIMEOUT_S = 2.0
 PS = "/bin/ps"  # base-system tools, by their absolute paths
 LSOF = "/usr/sbin/lsof"
 SERVE_SUFFIX = "/status-board/serve.py"
-REASONS = {"old": "an older version", "nokey": "no usable key", "wrong": "an older key", "silent": "it does not answer the proof", "absent": "an older version"}
+REASONS = {"old": "an older version", "nokey": "no usable key", "wrong": "an older key"}
+STATEMENTS = ("old", "nokey", "wrong")  # what the listener itself says, in an HTTP answer: the only kinds that can lead to a stop
+START_SETTLE_S = 1.0  # a server started again that is still alive after this long is up, whatever the hook can ask of it
 kill = os.kill  # tests replace these two: what is asked of a process, and the one function that signals
 
 
@@ -161,23 +179,44 @@ def find_board(cwd: Path):
     return folder, board.name, board
 
 
-def probe(port: int) -> str:
-    """'free' (nothing listening), 'board' (the board page answers) or 'other'
-    (something is there and is not the board, including something that
-    accepts the connection and never replies — bounded by the 1 s timeout)."""
+def probe_detail(port: int) -> tuple[str, str]:
+    """(kind, detail) of what is on the port, asked in one connection:
+
+      free     the connection was refused: nothing listens (the one error that says so);
+      board    `GET /` gave 200 with the board page's title;
+      other    an answer that is not the board page: something is there, and it is not the board;
+      mute     connected, and then no complete answer in a second, or a reset: something is there and does not answer;
+      unasked  the connect itself failed, other than refused (no source port, no descriptor, a filter, a timeout before the connection was made): the hook
+               could not ask. `detail` is the operating system's words for it.
+
+    `unasked` and `mute` say nothing about what is on the port, and nothing may be concluded from them."""
+    import open_board  # a sibling of serve.py, on the path since `load_serve`
+
+    kind, sock, detail = open_board.connect_kind(port, 1.0)
+    if sock is None:
+        return kind, detail
+    conn = http.client.HTTPConnection(HOST, port, timeout=1.0)
+    conn.sock = sock
     try:
-        conn = http.client.HTTPConnection(HOST, port, timeout=1.0)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        head = resp.read(4096)
+    except (http.client.RemoteDisconnected, http.client.IncompleteRead, OSError):
+        return "mute", ""
+    except (http.client.HTTPException, ValueError, UnicodeError):
+        return "other", ""  # an answer, but not the page: something that is not the board
+    finally:
+        conn.close()
         try:
-            conn.request("GET", "/")
-            resp = conn.getresponse()
-            head = resp.read(4096)
-        finally:
-            conn.close()
-    except ConnectionRefusedError:
-        return "free"
-    except (OSError, http.client.HTTPException):
-        return "other"
-    return "board" if resp.status == 200 and BOARD_PAGE in head.lower() else "other"
+            sock.close()
+        except OSError:
+            pass
+    return ("board" if resp.status == 200 and BOARD_PAGE in head.lower() else "other"), ""
+
+
+def probe(port: int) -> str:
+    """The kind of `probe_detail`: 'free', 'board', 'other', 'mute' or 'unasked'."""
+    return probe_detail(port)[0]
 
 
 def take_lock(lock: Path, strict: bool = False) -> bool:
@@ -219,6 +258,61 @@ def address_by_name(slug: str, state: Path | None = None) -> str | None:
 
 def launch(serve, repo: Path, slug: str, port: int, board_dir: Path) -> tuple[bool, str]:
     """Launch serve.py detached; (True, where the board answers) once it does, else (False, the one line to print)."""
+    proc, failure = _spawn(serve, repo, slug, port, board_dir)
+    if proc is None:
+        return False, failure
+    log_path = board_dir / "serve.log"
+    deadline = time.monotonic() + START_WAIT_S
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False, (
+                f'project-init: status board "{slug}" exited at start '
+                f"(code {proc.returncode}); see {log_path}"
+            )
+        if probe(port) == "board":
+            by_name = address_by_name(slug, Path(serve.STATE))
+            if by_name:
+                return True, f"{by_name} (by port: http://{HOST}:{port})"
+            return True, f"http://{HOST}:{port}"
+        time.sleep(0.1)
+    return False, (
+        f'project-init: status board "{slug}" was launched but is not answering '
+        f"on port {port} yet; see {log_path}"
+    )
+
+
+def launch_checked(serve, repo: Path, slug: str, port: int, board_dir: Path) -> tuple[str, str, int | None]:
+    """Launch serve.py detached and say what became of it, as (outcome, text, pid), without needing the hook to be able to connect:
+
+      up         the board answers `GET /`: `text` is where it answers;
+      unchecked  the process is alive after a second and the hook cannot connect to see it answer (`unasked`, or `mute`): it is up as far as can be told;
+      exited     the process ended (`text` is its exit code): a bind that failed ends it, and it says why in its log;
+      failed     it could not be started, or is alive and not answering yet: `text` is the line to print."""
+    proc, failure = _spawn(serve, repo, slug, port, board_dir)
+    if proc is None:
+        return "failed", failure, None
+    log_path = board_dir / "serve.log"
+    began = time.monotonic()
+    deadline = began + START_WAIT_S
+    while time.monotonic() < deadline:
+        code = proc.poll()
+        if code is not None:
+            return "exited", str(code), None
+        kind = probe(port)
+        if kind == "board":
+            by_name = address_by_name(slug, Path(serve.STATE))
+            return "up", (f"{by_name} (by port: http://{HOST}:{port})" if by_name else f"http://{HOST}:{port}"), proc.pid
+        if kind in ("unasked", "mute") and time.monotonic() - began >= START_SETTLE_S:
+            return ("exited", str(proc.returncode), None) if proc.poll() is not None else ("unchecked", "", proc.pid)
+        time.sleep(0.1)
+    code = proc.poll()
+    if code is not None:
+        return "exited", str(code), None
+    return "failed", f'project-init: status board "{slug}" was launched but is not answering on port {port} yet; see {log_path}', proc.pid
+
+
+def _spawn(serve, repo: Path, slug: str, port: int, board_dir: Path):
+    """Start serve.py detached (a session of its own, stdin from /dev/null, stdout and stderr in the board's log); (the process, None) or (None, the line)."""
     log_path = board_dir / "serve.log"
     try:
         log = open(log_path, "ab")
@@ -242,27 +336,11 @@ def launch(serve, repo: Path, slug: str, port: int, board_dir: Path) -> tuple[bo
             start_new_session=True,
         )
     except OSError as exc:
-        return False, f'project-init: status board "{slug}" could not be started ({exc}); see {log_path}'
+        return None, f'project-init: status board "{slug}" could not be started ({exc}); see {log_path}'
     finally:
         if log is not None:
             log.close()  # the child holds its own descriptor
-    deadline = time.monotonic() + START_WAIT_S
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            return False, (
-                f'project-init: status board "{slug}" exited at start '
-                f"(code {proc.returncode}); see {log_path}"
-            )
-        if probe(port) == "board":
-            by_name = address_by_name(slug, Path(serve.STATE))
-            if by_name:
-                return True, f"{by_name} (by port: http://{HOST}:{port})"
-            return True, f"http://{HOST}:{port}"
-        time.sleep(0.1)
-    return False, (
-        f'project-init: status board "{slug}" was launched but is not answering '
-        f"on port {port} yet; see {log_path}"
-    )
+    return proc, None
 
 
 def start(serve, repo: Path, slug: str, port: int, board_dir: Path) -> str:
@@ -317,6 +395,42 @@ def line_rate_limited(slug: str, log: Path) -> str:
 def line_phone_mode(slug: str) -> str:
     return (f'project-init: status board "{slug}" runs in phone mode and cannot prove itself; nothing was stopped. '
             "Stop it and start it again with --host.")
+
+
+# What each line says is true of what the hook measured and did, never of the machine's intent: "the hook could not connect" is a fact of the hook's
+# own connect; it does not say the machine refused, or that the board is down.
+def line_not_checked(slug: str, port: int, detail: str) -> str:
+    """The hook could not connect to the port (an error other than refused), and the record does not say the board is dead."""
+    return f'project-init: status board "{slug}" could not be checked: the hook could not connect to port {port} ({detail}); nothing was stopped or started.'
+
+
+def line_no_answer(slug: str, port: int, state: Path) -> str:
+    """Connected, and no complete answer: the hook cannot tell a hung board from a slow machine, so it stops nothing."""
+    return (f'project-init: status board "{slug}": port {port} accepts a connection but gives no answer; nothing was stopped. If the board is hung, '
+            f"stop its server (its pid is in {home_text(state)}/servers/{port}.json), then start a session here again.")
+
+
+def line_odd_answer(slug: str, port: int, state: Path, reason: str) -> str:
+    """An answer to the proof that no board of this plugin gives."""
+    return (f'project-init: status board "{slug}": its server answers the proof in a way this board never does ({reason}); nothing was stopped. '
+            f"If it is yours and wrong, stop it (its pid is in {home_text(state)}/servers/{port}.json), then start a session here again.")
+
+
+def line_restarted_unchecked(slug: str, reason: str, pid: int, new_pid: int) -> str:
+    """Stopped on two statements and started again, and the hook cannot connect to see the new server answer."""
+    return (f'project-init: status board "{slug}" could not prove it is this project\'s board ({reason}); stopped its server (pid {pid}) and started it '
+            f"again (pid {new_pid}); the hook could not connect to check it yet.")
+
+
+def line_started_unchecked(slug: str, new_pid: int) -> str:
+    """Started because the recorded pid is dead, and the hook cannot connect to see the new server answer."""
+    return f'project-init: status board "{slug}" was not running; started it again (pid {new_pid}); the hook could not connect to check it yet.'
+
+
+def line_exited(slug: str, code: object, log: Path) -> str:
+    """A server started again that ended at once: when the port is held by something else, that is what it says in its log."""
+    return (f'project-init: status board "{slug}" was started again but exited at once (code {code}); the port may be held by something else; '
+            f"see {log}.")
 
 
 # ── is the process on the port this board's own server? five facts, each measured ──────────────────────────────────────
@@ -473,46 +587,56 @@ def establish(repo: Path, port: int, state: Path) -> Verdict:
         return _cannot("F1", f"the check itself failed ({type(exc).__name__})")
 
 
-def _establish(repo: Path, port: int, state: Path) -> Verdict:
+def _read_record(repo: Path, port: int, state: Path) -> tuple[dict | None, Verdict | None]:
+    """F1, the record: (the record, None) when it is a regular file of this account in a private folder, naming this project's board on this port with a
+    pid; else (None, the verdict that says why it cannot be used)."""
     uid = os.getuid()
-    # F1, the record
     servers = state / "servers"
     try:
         folder = os.lstat(servers)
     except FileNotFoundError:
-        return _not_own("F1", "there is no folder of records")
+        return None, _not_own("F1", "there is no folder of records")
     except OSError:
-        return _cannot("F1", "the folder of the records could not be read")
+        return None, _cannot("F1", "the folder of the records could not be read")
     if not stat.S_ISDIR(folder.st_mode) or folder.st_uid != uid or folder.st_mode & 0o077:
-        return _cannot("F1", "the servers folder is not this account's, or is open to others")
+        return None, _cannot("F1", "the servers folder is not this account's, or is open to others")
     path = servers / f"{port}.json"
     try:
         info = os.lstat(path)
     except FileNotFoundError:
-        return _not_own("F1", "there is no record for this port")
+        return None, _not_own("F1", "there is no record for this port")
     except OSError:
-        return _cannot("F1", "the record could not be read")
+        return None, _cannot("F1", "the record could not be read")
     if not stat.S_ISREG(info.st_mode) or info.st_uid != uid:
-        return _not_own("F1", "the record is not a regular file of this account's")
+        return None, _not_own("F1", "the record is not a regular file of this account's")
     try:
         record = json.loads(path.read_text()[:65536])
     except (OSError, ValueError):
-        return _cannot("F1", "the record could not be read")
+        return None, _cannot("F1", "the record could not be read")
     if not isinstance(record, dict):
-        return _cannot("F1", "the record is not what a server writes")
+        return None, _cannot("F1", "the record is not what a server writes")
     pid = record.get("pid")
     if record.get("service") != "status-board" or record.get("port") != port or isinstance(record.get("port"), bool):
-        return _not_own("F1", "the record is not this port's board", record)
+        return None, _not_own("F1", "the record is not this port's board", record)
     if not isinstance(record.get("repo"), str):
-        return _not_own("F1", "the record names no project", record)
+        return None, _not_own("F1", "the record names no project", record)
     try:
         same = Path(record["repo"]).resolve() == repo.resolve()
     except (OSError, RuntimeError):
-        return _cannot("F1", "the record's project could not be resolved")
+        return None, _cannot("F1", "the record's project could not be resolved")
     if not same:
-        return _not_own("F1", "the record is another project's", record)
+        return None, _not_own("F1", "the record is another project's", record)
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-        return _not_own("F1", "the record's pid is not a process", record)
+        return None, _not_own("F1", "the record's pid is not a process", record)
+    return record, None
+
+
+def _establish(repo: Path, port: int, state: Path) -> Verdict:
+    uid = os.getuid()
+    record, refused = _read_record(repo, port, state)
+    if record is None:
+        return refused
+    pid = record["pid"]
     if record.get("host") != HOST:
         return Verdict("phone", "F1", "F1: the board listens on something other than 127.0.0.1", pid, record)
     # F2, alive
@@ -607,14 +731,34 @@ def _open_handle(pid: int) -> int | None:
         return None
 
 
+def _is_zombie(pid: int) -> bool:
+    """True when the process has ended and nothing has collected it yet: it is still in the process table (`kill(pid, 0)` still succeeds) and holds
+    nothing. Linux reads the state from /proc/<pid>/stat; elsewhere one `ps -o stat=`. Where that cannot be read, it is not called a zombie."""
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return False
+        return text[text.rfind(")") + 1:].split()[:1] == ["Z"]
+    got = _tool([PS, "-o", "stat=", "-p", str(pid)])
+    return got is not None and got[0] == 0 and got[1].strip().startswith("Z")
+
+
 def _pid_gone(pid: int) -> bool:
+    """The process no longer exists, or is a zombie: gone for every purpose. A pid that cannot be asked (another account's) is not gone."""
     try:
         kill(pid, 0)
     except ProcessLookupError:
         return True
     except OSError:
         return False
-    return False
+    return _is_zombie(pid)
+
+
+def recorded_pid(repo: Path, port: int, state: Path) -> int | None:
+    """The pid in this port's record, when the record is this project's board's own; None when there is no usable record."""
+    record, _refused = _read_record(repo, port, state)
+    return None if record is None else record["pid"]
 
 
 def stamp_age(stamp: Path) -> float | None:
@@ -640,24 +784,30 @@ def write_stamp(stamp: Path) -> bool:
 
 def proof_kind(state: Path, port: int) -> tuple[str, str]:
     """(kind, reason) of the proof of the board on `port`: 'proven', 'key_not_private' (the key file is there and cannot be used), or one of
-    the kinds of `open_board.proof_outcome` with its reason in words. A 503 is asked once more after half a second: a server that has no key
-    reads the file again, so a key the owner has just closed heals it."""
+    the kinds of `open_board.proof_outcome_detail` (old, nokey, wrong, odd, mute, unasked, free) with its reason in words: for a statement
+    (old, nokey, wrong) what it means, for `odd` and `unasked` what was seen (`status 302`, the system's words for the failed connect). A 503 is
+    asked once more after half a second: a server that has no key reads the file again, so a key that has just been closed heals it.
+
+    A key file that is not there is not a reason to stop asking: the board is asked with a key that cannot match, so that a board of an
+    earlier release (no proof route: `old`), or one that holds a key of its own (`wrong`) says so itself, and a connect that fails or a hang
+    says nothing."""
     import front_door
     import open_board
 
     key_path = state / "servers" / "board.key"
     if not os.path.lexists(key_path):
-        return "absent", REASONS["absent"]
-    key = front_door.read_key(state, "board.key")
-    if key is None or len(key) != 32:
-        return "key_not_private", ""
-    kind, _run = open_board.proof_outcome(key, port)
+        key = os.urandom(32)
+    else:
+        key = front_door.read_key(state, "board.key")
+        if key is None or len(key) != 32:
+            return "key_not_private", ""
+    kind, _run, detail = open_board.proof_outcome_detail(key, port)
     if kind == "nokey":
         time.sleep(PROOF_RETRY_S)
-        kind, _run = open_board.proof_outcome(key, port)
+        kind, _run, detail = open_board.proof_outcome_detail(key, port)
     if kind == "proven":
         return "proven", ""
-    return kind, REASONS[kind]
+    return kind, REASONS.get(kind) or detail
 
 
 def restart_own(serve, repo: Path, slug: str, port: int, board_dir: Path, state: Path, reason: str) -> str:
@@ -685,20 +835,29 @@ def restart_own(serve, repo: Path, slug: str, port: int, board_dir: Path, state:
                 os.close(handle)
             except OSError:
                 pass
+    # The wait is for the PID, and for nothing else: the port cannot be asked about, because the hook's own connect may be what fails (it once read
+    # a connect error as "the port is held", never saw it free, and left the board down). A zombie is gone.
     deadline = time.monotonic() + STOP_WAIT_S
     while time.monotonic() < deadline:
-        if _pid_gone(pid) and probe(port) == "free":
+        if _pid_gone(pid):
             break
         time.sleep(0.05)
     else:
         return line_did_not_stop(slug, pid)
-    ok, text = launch(serve, repo, slug, port, board_dir)
-    if not ok:
+    log = board_dir / "serve.log"
+    outcome, text, new_pid = launch_checked(serve, repo, slug, port, board_dir)  # the start needs no connect: serve.py binds, or exits and says why
+    if outcome == "exited":
+        return line_exited(slug, text, log)
+    if outcome == "failed":
         return text
+    if outcome == "unchecked" or new_pid is None:
+        return line_restarted_unchecked(slug, reason, pid, new_pid or 0)
     kind, why = proof_kind(state, port)
     if kind == "proven":
         return line_restarted(slug, reason, pid, text)
-    return line_still_not_proven(slug, why or REASONS["nokey"], board_dir / "serve.log")
+    if kind in ("unasked", "mute"):
+        return line_restarted_unchecked(slug, reason, pid, new_pid)
+    return line_still_not_proven(slug, why or REASONS["nokey"], log)
 
 
 def main() -> int:
@@ -725,46 +884,120 @@ def main() -> int:
     state = Path(serve.STATE).resolve()
 
     lock = board_dir / ".revive.lock"
-    if probe(port) == "free":
-        if not take_lock(lock):
-            return 0
-        try:
-            if probe(port) == "free":  # another hook may have won while we waited
-                print(start(serve, repo, slug, port, board_dir))
-        finally:
-            try:
-                lock.unlink()
-            except OSError:
-                pass
+    first, detail = probe_detail(port)
+    if first == "free":
+        plain_start(serve, repo, slug, port, board_dir, lock)
+        return 0
+    if first == "unasked":  # the hook's own failure to ask: the port says nothing, so the record decides
+        said = when_unasked(serve, repo, slug, port, board_dir, state, detail, lock, locked=False)
+        if said:
+            print(said)
         return 0
 
     kind, reason = proof_kind(state, port)
     if kind == "proven":
         return 0
-    if kind == "key_not_private":
-        print(line_key_not_private(slug, state))
+    if kind not in STATEMENTS:  # nothing the listener said that this hook acts on
+        said = said_without_statement(serve, repo, slug, port, board_dir, state, kind, reason, lock, locked=False)
+        if said:
+            print(said)
         return 0
+    # A statement, on a first connection. A process is stopped only on the same statement on a second, separate connection, under the lock.
     if not take_lock(lock, strict=True):
         if not lock.exists():  # held by another hook: silent. Not made at all: stop nothing, and say why
             print(line_cannot_establish(slug, port, "its folder could not be locked", state))
         return 0
     try:
-        if probe(port) == "free":  # the board went away, or another hook has stopped it, while we waited
+        second, detail = probe_detail(port)  # the board went away, or another hook has stopped it, while we waited
+        if second == "free":
             print(start(serve, repo, slug, port, board_dir))
             return 0
-        kind, reason = proof_kind(state, port)  # another hook may have restarted it, or the owner closed the key
+        if second == "unasked":
+            said = when_unasked(serve, repo, slug, port, board_dir, state, detail, lock, locked=True)
+            if said:
+                print(said)
+            return 0
+        kind, reason = proof_kind(state, port)  # the second connection: another hook may have restarted it, or the key may have been closed
         if kind == "proven":
             return 0
-        if kind == "key_not_private":
-            print(line_key_not_private(slug, state))
+        if kind in STATEMENTS:
+            print(restart_own(serve, repo, slug, port, board_dir, state, reason))
             return 0
-        print(restart_own(serve, repo, slug, port, board_dir, state, reason))
+        said = said_without_statement(serve, repo, slug, port, board_dir, state, kind, reason, lock, locked=True)
+        if said:
+            print(said)
     finally:
         try:
             lock.unlink()
         except OSError:
             pass
     return 0
+
+
+def plain_start(serve, repo: Path, slug: str, port: int, board_dir: Path, lock: Path) -> None:
+    """The port was refused: nothing listens. Start the board under the lock (the plain start, as before)."""
+    if not take_lock(lock):
+        return
+    try:
+        if probe(port) == "free":  # another hook may have won while we waited
+            print(start(serve, repo, slug, port, board_dir))
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
+def said_without_statement(serve, repo: Path, slug: str, port: int, board_dir: Path, state: Path, kind: str, reason: str, lock: Path, locked: bool) -> str | None:
+    """The line for a proof that is not a statement the hook acts on: the key file is not private, an answer no board gives, no answer, the hook's own
+    failure to connect, or a refused connection (the board went away). Never a stop."""
+    if kind == "key_not_private":
+        return line_key_not_private(slug, state)
+    if kind == "odd":
+        return line_odd_answer(slug, port, state, reason)
+    if kind == "mute":
+        return line_no_answer(slug, port, state)
+    if kind == "unasked":
+        return when_unasked(serve, repo, slug, port, board_dir, state, reason, lock, locked)
+    if kind == "free":
+        if locked:
+            return start(serve, repo, slug, port, board_dir)
+        plain_start(serve, repo, slug, port, board_dir, lock)
+        return None
+    return line_cannot_establish(slug, port, f"the proof gave {kind}", state)
+
+
+def when_unasked(serve, repo: Path, slug: str, port: int, board_dir: Path, state: Path, detail: str, lock: Path, locked: bool) -> str | None:
+    """The hook could not connect to the port (an error other than refused), so the port says nothing, and the record decides:
+
+      the recorded pid is dead (gone, or a zombie)  -> the board is not running: start it. A bind that fails ends the new process, which says why in
+                                                       its log, and that is said truthfully;
+      the recorded pid is alive, or there is no record  -> say the hook could not check, and do nothing.
+
+    Never a signal and never "held by a program that is not this board's server": that is said only after a statement by a listener."""
+    pid = recorded_pid(repo, port, state)
+    if pid is None or not _pid_gone(pid):
+        return line_not_checked(slug, port, detail)
+    if not locked and not take_lock(lock):
+        return None  # another hook is starting it
+    try:
+        pid = recorded_pid(repo, port, state)  # another hook may have started it since: its record names a live process
+        if pid is not None and not _pid_gone(pid):
+            return None
+        outcome, text, new_pid = launch_checked(serve, repo, slug, port, board_dir)
+    finally:
+        if not locked:
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+    if outcome == "up":
+        return f'project-init: status board "{slug}" was not running; started it again: {text}'
+    if outcome == "unchecked":
+        return line_started_unchecked(slug, new_pid or 0)
+    if outcome == "exited":
+        return line_exited(slug, text, board_dir / "serve.log")
+    return text
 
 
 if __name__ == "__main__":

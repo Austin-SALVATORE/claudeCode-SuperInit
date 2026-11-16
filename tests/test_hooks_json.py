@@ -67,16 +67,19 @@ DOCUMENTED = {
 # settings file and for plugin.json, never for hooks.json): the sha1 of its canonical JSON (sorted keys, no spaces), taken from the
 # hooks.json of the release before this one with part A's and part B's patches applied (the copy of 15 Nov 2026, 2.3.0 in the making).
 # A hook that is changed on purpose changes this hash: say so in the commit that does it.
-STRUCTURE_SHA1 = "c6a532a9f362878fd17becb3c40eac5c936bf934"
+# One value was changed on purpose: the timeout of SessionStart[2] (the hook that starts a board) is 25 seconds, not 15, because the stop of a server and
+# the start of the next one are one path of that hook and a hook that is cut between them leaves the board down; the path takes about 14 seconds at its
+# longest. Nothing else of the structure changed.
+STRUCTURE_SHA1 = "560fd00e813cb958d6fd680caace216ec3f09409"
 # The sha1 of each of the ten texts as they were in hooks.json, by (event, index of the group in the event's list). One text was changed on purpose:
-# SessionStart[2], the hook that starts a board, now also asks the board for its proof and restarts a board of its own that cannot give it
-# (hooks/README.md says so); the hash of that paragraph is the one of the new text, and the structure (events, commands, timeouts) is unchanged.
+# SessionStart[2], the hook that starts a board, asks the board for its proof and stops a server only on what that server itself says (hooks/README.md
+# says so); the hash of that paragraph is the one of the new text.
 DESCRIPTION_SHA1 = {
     ("UserPromptSubmit", 0): "d6ea7c879a84",
     ("UserPromptSubmit", 1): "75c25f7a6d44",
     ("SessionStart", 0): "44e422aa5cfc",
     ("SessionStart", 1): "68d800939325",
-    ("SessionStart", 2): "dbeae0971b18",
+    ("SessionStart", 2): "aade1a959bf4",
     ("Stop", 0): "4fae8e032719",
     ("PostToolUse", 0): "8fdd6d3e28c1",
     ("PostToolUse", 1): "252f3109d264",

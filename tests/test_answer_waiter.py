@@ -2611,6 +2611,7 @@ def _revive(case: Case, cwd: Path, start: Path | None, port: int) -> list:
     (plugin / "status-board").mkdir()
     shutil.copy(PLUGIN / "hooks" / "revive-board.py", plugin / "hooks" / "revive-board.py")
     shutil.copy(PLUGIN / "status-board" / "answer_ledger.py", plugin / "status-board" / "answer_ledger.py")
+    shutil.copy(PLUGIN / "status-board" / "open_board.py", plugin / "status-board" / "open_board.py")  # the hook asks the port through its connect_kind
     (plugin / "status-board" / "serve.py").write_text(
         "import os, sys\nfrom pathlib import Path\n"
         "STATE = Path(os.environ['STATUS_BOARD_HOME'])\n"

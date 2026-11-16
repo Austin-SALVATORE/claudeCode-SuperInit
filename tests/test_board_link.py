@@ -515,8 +515,9 @@ def test_the_status_board_skill_says_the_row_is_there_and_to_give_the_address_on
     assert text.count(sentence) == 1, f"the sentence is there {text.count(sentence)} times"
     paragraph = text[text.index("**Give the owner the address by name, not the port.**"):]
     paragraph = paragraph[:paragraph.index("\n\n")]
-    follows = ("That address only reaches a page that asks the owner to open the board from Claude Code, so when you give it, say in the same breath how "
-               "the board is opened: the button in the row above the prompt (its digit 9, or a click), or the owner's words \"open the board\".")
+    follows = ("That address opens the board in any browser on this machine, by itself: give it as it is. Only where the owner has turned the lock on "
+               "(the empty file `board-lock` in the status-board home, below) does it show a page that asks the owner to open the board from Claude Code; "
+               "then say in the same breath how: the button in the row above the prompt (its digit 9, or a click), or the owner's words \"open the board\".")
     assert paragraph.rstrip().endswith(sentence + " " + follows), "that sentence, and the one that says how the board is opened, must end that paragraph"
     assert " he " not in sentence and "his" not in sentence.split()
 
@@ -1039,9 +1040,9 @@ def test_skill_says_a_board_is_opened_from_claude_code_for_each_browser_tab():
     row's button or the owner's words; the status line's link and a bookmark land on a page that asks for that; a session never gives an address
     with a secret and never posts to a board; and it does not give or open an address when the port does not prove it is the board."""
     flat = " ".join((PLUGIN / "skills" / "status-board" / "SKILL.md").read_text().replace("**", "").split())
-    for phrase in ("A board is opened from Claude Code, once for each browser tab",
+    for phrase in ("is a board opened from Claude Code, once for each browser tab",
                    "the button in the row above this project's prompt (`9: board <short address>`: a click in fullscreen rendering, or the digit 9 typed into an empty prompt)",
-                   "A reload of that tab keeps working",
+                   "a reload of that tab keeps working",
                    "a new tab, the status line's link and a bookmark show a page that asks for it",
                    "If the opener says the port is not answering as this project's board, say so in one sentence and do not give or open an address",
                    "You never give an address that carries a secret and you never post to a board"):
@@ -1051,7 +1052,7 @@ def test_skill_says_a_board_is_opened_from_claude_code_for_each_browser_tab():
     readme = " ".join((PLUGIN / "README.md").read_text().split())
     for phrase in ("for each browser tab", "token", "that tab's own storage", "never the key", "the digit 9"):
         assert phrase in readme, f"README.md does not say {phrase!r}"
-    paragraph = readme.split("A board answers only its own page")[1].split("Restart each running board")[0]
+    paragraph = readme.split("The lock, when you turn it on, is the 2.4.0 behaviour.")[1].split("Restart each running board")[0]
     assert "sends it as a header" in paragraph and "HttpOnly" not in paragraph and "as a cookie" not in paragraph, "the README still says the carrier is a cookie"
     assert "a cookie would go to every one of them" in paragraph, "the README says why it is not a cookie"
     assert ("asks the board's port to prove it holds the key" in paragraph and "random challenge" in paragraph and "carrying no secret" in paragraph
@@ -1131,7 +1132,8 @@ def test_the_words_of_the_final_check_are_true_and_stay_true():
     assert "board http://localhost" not in set_up and "http://localhost:8800/<name>`, shows in two places" not in set_up, "the set-up skill still says the row shows an address"
     assert "one button, `9: board localhost:8800/<name>`" in set_up and "One button above the prompt, 9: board localhost:8800/<name>, that opens the board" in set_up, \
         "the set-up skill does not say that the row is one button, in its intro and in the answer that keeps it"
-    assert skill.count("in the same breath how the board is opened") == 2, "the skill does not say, in both places where it gives the short address, how the board is opened"
+    assert skill.count("in the same breath how") == 1 and "that address opens the board" in skill, \
+        "the skill does not say that the address opens the board, and (only with the lock on) how it is opened"
     for name in ("status-board/statusline_filter.py", "status-board/board_link.py"):
         text = " ".join((PLUGIN / name).read_text().split())
         assert "binds 127.0.0.1 only" not in text, f"{name} says the door binds 127.0.0.1 only: it holds ::1 too"

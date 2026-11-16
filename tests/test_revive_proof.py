@@ -9,7 +9,10 @@ project", and a program that took a stopped board's port and served the title ke
 restarts a board of its OWN that cannot give the proof; anything else on the port is reported, never stopped.
 
 THE RULE above every other, and what these tests hold: a process is signalled only when all five facts are established, and again right before the
-signal; anything that cannot be established means report, stop nothing. The five facts: F1 the record `servers/<port>.json` (a regular file of this
+signal, AND the process said `old`, `nokey` or `wrong` in an HTTP answer on two separate connections; anything that cannot be established means report,
+stop nothing. No silence, hang, reset, failed connect or odd answer ever leads to a signal: the absence of an answer can be the hook's own (a connect
+that fails with an error other than refused is injected in the hook's process only, never made by exhausting anything), and a healthy board was once
+stopped for it and not started again. The five facts: F1 the record `servers/<port>.json` (a regular file of this
 account in a private folder; this project's repo; a loopback board); F2 the pid is alive; F3 it is this account's; F4 it is the process that listens on
 the port; F5 its argv is `python .../status-board/serve.py` with a `--repo` that is this project's folder.
 
@@ -27,6 +30,7 @@ Exit code: 0 when every test passes, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import hmac
 import importlib.util
@@ -37,6 +41,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -230,7 +235,7 @@ if __name__ == "__main__":
 '''
 
 STANDIN = r'''
-import hashlib, hmac, json, os, signal, sys, time
+import hashlib, hmac, json, os, signal, socket, struct, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -269,6 +274,16 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "hang":
             time.sleep(12)
             return self.send(404, b"late")
+        if mode == "reset":  # connected, then the connection is torn down with a reset instead of an answer
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            self.close_connection = True
+            self.connection.close()
+            return None
+        if mode == "wrong_then_hang":  # the first proof is a statement (a digest the key does not make), every later one hangs
+            if seen["proofs"] == 1:
+                return self.send(200, json.dumps({"run": run, "proof": "f" * 64}).encode(), "application/json")
+            time.sleep(12)
+            return self.send(404, b"late")
         if mode == "redirect":
             return self.send(302, b"", extra={"Location": "/"})
         if mode == "large":
@@ -287,6 +302,43 @@ class Handler(BaseHTTPRequestHandler):
 
 
 ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+'''
+
+
+INJECT = r'''
+import errno, os, socket
+_name, _port = os.environ.get("INJECT_ERRNO"), os.environ.get("INJECT_PORT")
+if _name and _port:
+    _real = socket.socket.connect
+    _real_ex = socket.socket.connect_ex
+
+    def _fails(address):
+        if not (isinstance(address, tuple) and len(address) >= 2 and address[1] == int(_port)):
+            return False
+        if os.environ.get("INJECT_IF_EXISTS") and not os.path.exists(os.environ["INJECT_IF_EXISTS"]):
+            return False
+        if os.environ.get("INJECT_IF_NONEMPTY"):
+            try:
+                if os.path.getsize(os.environ["INJECT_IF_NONEMPTY"]) == 0:
+                    return False
+            except OSError:
+                return False
+        return True
+
+    def connect(self, address):
+        if _fails(address):
+            if _name == "TIMEOUT":
+                raise socket.timeout("timed out")
+            raise OSError(getattr(errno, _name), os.strerror(getattr(errno, _name)))
+        return _real(self, address)
+
+    def connect_ex(self, address):
+        if _fails(address):
+            return errno.ETIMEDOUT if _name == "TIMEOUT" else getattr(errno, _name)
+        return _real_ex(self, address)
+
+    socket.socket.connect = connect
+    socket.socket.connect_ex = connect_ex
 '''
 
 
@@ -408,6 +460,31 @@ class World:
         if with_record:
             self.write_record(pid)
         return pid  # type: ignore[return-value]
+
+    def start_real_server(self) -> int:
+        """The REAL `serve.py` of the tree under test, on this world's port, started the way the hook starts one (detached, `--repo --port`, no
+        interpreter option), with its own key and record: a healthy board, for the cases where only the hook's side fails."""
+        assert_outside_the_owners_range(self.port, self.front)
+        folder = self.root / "real"
+        if not folder.exists():
+            shutil.copytree(PLUGIN / "status-board", folder / "status-board", ignore=shutil.ignore_patterns("__pycache__"))
+        pid = spawn([sys.executable, str(folder / "status-board" / "serve.py"), "--repo", str(self.project), "--port", str(self.port)], self.env(), self.root / "real.log", self.board)
+        assert wait_for(lambda: listening(self.port) and (self.servers / f"{self.port}.json").exists() and (self.servers / "board.key").exists(), 20), (self.root / "real.log").read_text()[-800:]
+        return pid
+
+    def injection(self, error: str, **when: Path) -> dict:
+        """Environment for ONE hook run in which a connect to this world's board port fails with `error` (an errno name, or TIMEOUT) INSIDE THE HOOK'S
+        PROCESS ONLY, through a `sitecustomize` that only that run's PYTHONPATH finds: nothing is exhausted on the machine and no server is touched.
+        `if_exists` / `if_nonempty`: the failure holds only while that file exists / is not empty (to fail only under the lock, or after the signal)."""
+        folder = self.root / "inject"
+        folder.mkdir(exist_ok=True)
+        (folder / "sitecustomize.py").write_text(INJECT)
+        extra = {"PYTHONPATH": str(folder), "INJECT_ERRNO": error, "INJECT_PORT": str(self.port)}
+        if "if_exists" in when:
+            extra["INJECT_IF_EXISTS"] = str(when["if_exists"])
+        if "if_nonempty" in when:
+            extra["INJECT_IF_NONEMPTY"] = str(when["if_nonempty"])
+        return extra
 
     # ── the hook ──────────────────────────────────────────────────────────────────────────────────────────────────────
     def run_hook(self, **env_extra: str) -> subprocess.CompletedProcess:
@@ -686,8 +763,277 @@ def test_pid_reused_between_the_check_and_the_signal_is_not_signalled():
     assert line == line_o(world), line
 
 
+# ── the hook stops a process only on what its own server says ─────────────────────────────────────────────────────────
+# A process is signalled only when it is established as this project's own server (five facts, twice) AND it has said `old`, `nokey` or `wrong` in an HTTP
+# answer on two separate connections. A failed connect, a hang, a reset or an odd answer is the absence of a statement, and the absence can be the hook's
+# own (no source port, no descriptor, a filter): a board was stopped for that, healthy, and not started again. The errors are injected in the hook's own
+# process (`World.injection`); nothing is exhausted on the machine.
+def line_not_checked(world: World, detail: str) -> str:
+    return board_line(world, f" could not be checked: the hook could not connect to port {world.port} ({detail}); nothing was stopped or started.")
+
+
+def line_no_answer(world: World) -> str:
+    return board_line(world, f": port {world.port} accepts a connection but gives no answer; nothing was stopped. If the board is hung, stop its server "
+                             f"(its pid is in {world.home_text()}/servers/{world.port}.json), then start a session here again.")
+
+
+def line_odd_answer(world: World, reason: str) -> str:
+    return board_line(world, f": its server answers the proof in a way this board never does ({reason}); nothing was stopped. If it is yours and wrong, "
+                             f"stop it (its pid is in {world.home_text()}/servers/{world.port}.json), then start a session here again.")
+
+
+def line_restarted_unchecked(world: World, reason: str, pid: int, new: int) -> str:
+    return board_line(world, f" could not prove it is this project's board ({reason}); stopped its server (pid {pid}) and started it again (pid {new}); "
+                             f"the hook could not connect to check it yet.")
+
+
+def line_started_unchecked(world: World, new: int) -> str:
+    return board_line(world, f" was not running; started it again (pid {new}); the hook could not connect to check it yet.")
+
+
+def line_exited(world: World, code: int) -> str:
+    return board_line(world, f" was started again but exited at once (code {code}); the port may be held by something else; see {world.board / 'serve.log'}.")
+
+
+CONNECT_ERRORS = ("EADDRNOTAVAIL", "EMFILE", "ENFILE", "EACCES", "EPERM", "ENOBUFS", "ENETUNREACH", "TIMEOUT")
+
+
+def strerror_of(name: str) -> str:
+    return "timed out" if name == "TIMEOUT" else os.strerror(getattr(errno, name))
+
+
+def test_connect_error_in_hook_only_signals_nothing_and_line_is_true():
+    """THE CASE THAT MOTIVATES THIS RELEASE. A healthy board, answering everyone, with its key; the hook's own connect to its port fails with `EADDRNOTAVAIL` (no source port to use:
+    the machine could not carry the question). Before this release that read as "the board does not answer", the hook stopped the board, and the port
+    then read as held, so the board stayed down. Now: no signal, one line that says what is true of the hook, the board untouched and still proving
+    itself to a client whose connect works."""
+    sys.path.insert(0, str(PLUGIN / "status-board"))
+    import open_board
+
+    world = World()
+    pid = world.start_real_server()
+    key = world.servers / "board.key"
+    assert open_board.proof_outcome(key.read_bytes(), world.port)[0] == "proven", "the board is healthy"
+    done = world.run_hook(**world.injection("EADDRNOTAVAIL"))
+    (line,) = world.lines(done)
+    assert world.signals() == [], f"the hook signalled a healthy board (pids {world.signals()}, the board is {pid}); it printed {world.lines(done)}"
+    assert line == line_not_checked(world, strerror_of("EADDRNOTAVAIL")), line
+    assert alive(pid) and world.started_servers() == [], "the board is running and nothing else was started"
+    assert open_board.proof_outcome(key.read_bytes(), world.port)[0] == "proven", "and it still proves itself"
+    assert not (world.board / ".revive-restarted").exists(), "no stamp: no restart was begun"
+
+
+def test_after_that_a_working_hook_does_nothing():
+    world = World()
+    pid = world.start_real_server()
+    world.run_hook(**world.injection("EADDRNOTAVAIL"))
+    again = world.run_hook()
+    assert again.stdout == "" and again.stderr == "", (again.stdout, again.stderr)
+    assert world.signals() == [] and alive(pid) and world.started_servers() == []
+
+
+def test_each_connect_error_is_unasked_never_a_signal():
+    """Every way a connect can fail, in the hook's process: `probe` and `proof_outcome` say `unasked` (the hook's own failure to ask), and a whole hook run
+    against a healthy board sends no signal and prints the one line."""
+    sys.path.insert(0, str(PLUGIN / "status-board"))
+    import open_board
+
+    world = World()
+    world.start_standin("wrong")
+    key = world.make_key()
+    module = world.load_hook()
+    real = socket.socket.connect
+    for name in CONNECT_ERRORS:
+        def failing(self, address, _name=name):
+            if isinstance(address, tuple) and address[1] == world.port:
+                if _name == "TIMEOUT":
+                    raise socket.timeout("timed out")
+                raise OSError(getattr(errno, _name), os.strerror(getattr(errno, _name)))
+            return real(self, address)
+
+        socket.socket.connect = failing
+        try:
+            assert open_board.proof_outcome(key, world.port)[0] == "unasked", name
+            assert module.probe(world.port) == "unasked", name
+        finally:
+            socket.socket.connect = real
+    assert world.signals() == []
+    for name in CONNECT_ERRORS:
+        other = World()
+        pid = other.start_real_server()
+        done = other.run_hook(**other.injection(name))
+        (line,) = other.lines(done)
+        assert line == line_not_checked(other, strerror_of(name)), (name, line)
+        assert other.signals() == [] and alive(pid) and other.started_servers() == [], name
+
+
+def test_refused_is_free_and_starts():
+    """The one error that is knowledge: nothing listens. `probe` and `proof_outcome` say `free`, and the hook starts the board (the plain start)."""
+    sys.path.insert(0, str(PLUGIN / "status-board"))
+    import open_board
+
+    world = World()
+    key = world.make_key()
+    module = world.load_hook()
+    assert module.probe(world.port) == "free" and open_board.proof_outcome(key, world.port) == ("free", None)
+    done = world.run_hook()
+    (line,) = world.lines(done)
+    assert line.startswith(board_line(world, " was not running; started it again: http")), line
+    assert world.signals() == [] and len(world.started_servers()) == 1 and listening(world.port)
+
+
+def test_reset_and_read_timeout_after_connect_are_mute_never_a_signal():
+    """Something is there, accepted the connection, and gave no complete answer (a reset, a hang): the absence of an answer after the connection was made."""
+    sys.path.insert(0, str(PLUGIN / "status-board"))
+    import open_board
+
+    for mode in ("reset", "hang"):
+        world = World()
+        key = world.make_key()
+        pid = world.start_standin(mode)
+        assert open_board.proof_outcome(key, world.port)[0] == "mute", mode
+        done = world.run_hook()
+        (line,) = world.lines(done)
+        assert line == line_no_answer(world), (mode, line)
+        assert world.signals() == [] and alive(pid) and world.started_servers() == [], mode
+
+
+def test_after_stop_board_is_started_even_when_probe_is_unasked():
+    """Two statements (`wrong`, twice), the signal, and from then on the hook's connects fail (as when the machine cannot carry a connection): the wait is
+    for the pid, not the port, so once the pid is gone the board is started, and the line says it could not be checked yet."""
+    world = World()
+    world.make_key()
+    pid = world.start_standin("wrong")
+    done = world.run_hook(**world.injection("EADDRNOTAVAIL", if_nonempty=world.signal_log))
+    (line,) = world.lines(done)
+    assert world.signals() == [pid], world.signals()
+    assert wait_for(lambda: not alive(pid), 5)
+    (started,) = world.started_servers()
+    new = int(started.split()[0])
+    assert line == line_restarted_unchecked(world, "an older key", pid, new), line
+    assert listening(world.port), "the board is up"
+
+
+def test_zombie_counts_as_gone_and_board_is_started():
+    """A server whose parent has not collected it stays in the process table after the signal: `kill(pid, 0)` still succeeds, but it holds nothing and is
+    gone for every purpose. It is not "did not stop"; the board is started."""
+    world = World()
+    world.make_key()
+    folder = world.root / "zombie" / "status-board"
+    folder.mkdir(parents=True)
+    (folder / "serve.py").write_text(STANDIN)
+    log = open(world.root / "zombie.log", "ab")
+    parent_keeps = subprocess.Popen([sys.executable, str(folder / "serve.py"), "--repo", str(world.project), "--port", str(world.port)], stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=log, cwd=str(world.board), env=world.env(STANDIN_MODE="wrong", STATUS_BOARD_HOME=str(world.state)), start_new_session=True)
+    log.close()
+    PIDS.append(parent_keeps.pid)
+    try:
+        assert wait_for(lambda: listening(world.port), 10)
+        world.write_record(parent_keeps.pid)
+        done = world.run_hook()
+        (line,) = world.lines(done)
+        assert world.signals() == [parent_keeps.pid]
+        state = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(parent_keeps.pid)], capture_output=True, text=True).stdout.strip()
+        assert state.startswith("Z"), f"the old server is a zombie, collected by nobody: {state!r}"
+        assert restarted_line(world, "an older key", parent_keeps.pid).fullmatch(line), line
+        assert len(world.started_servers()) == 1 and listening(world.port)
+    finally:
+        parent_keeps.wait(timeout=10)
+
+
+def test_did_not_stop_only_when_pid_alive():
+    """Line S needs a process that is alive and not a zombie after 3 seconds (it ignores SIGTERM). A pid that is gone while the port still reads as held
+    (another program took it) is not "did not stop": the board is started and the new server says why it exited."""
+    world = World()
+    world.make_key()
+    pid = world.start_standin("ignore_term")
+    done = world.run_hook()
+    (line,) = world.lines(done)
+    assert line == board_line(world, f": its server (pid {pid}) did not stop within 3 seconds; nothing else was done. Stop it yourself, then start a session here again."), line
+    assert alive(pid) and world.signals() == [pid]
+    other = World(shim="normal")
+    other.make_key()
+    held = other.start_standin("wrong")
+    module = other.load_hook()
+    sent: list = []
+    module.signal_process = lambda target, handle=None: sent.append(target)
+    real_kill = os.kill
+
+    def kill(target, sig):
+        if sig == 0 and sent and target == held:
+            raise ProcessLookupError()  # the recorded pid is gone once the signal was sent
+        return real_kill(target, sig)
+
+    module.kill = kill
+    module.probe = lambda port: "mute"  # whatever holds the port gives the hook no answer, so the wait must not depend on the port
+    serve = module.load_serve()
+    text = module.restart_own(serve, other.project.resolve(), other.slug, other.port, other.board, other.state.resolve(), "an older key")
+    assert sent == [held]
+    assert text == line_exited(other, 1) and "did not stop" not in text, text
+
+
+def test_dead_recorded_pid_and_unasked_port_starts_board_and_never_says_held():
+    """The next hook after a stop that was wrong: the recorded pid is dead and its connects fail. The port can say nothing, so it is the record that decides: a dead
+    pid means the board is not running, and the board is started. It never says "held by a program that is not this board's server"."""
+    world = World()
+    world.make_key()
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    world.write_record(dead.pid)
+    done = world.run_hook(**world.injection("EADDRNOTAVAIL"))
+    (line,) = world.lines(done)
+    (started,) = world.started_servers()
+    assert line == line_started_unchecked(world, int(started.split()[0])), line
+    assert "held by a program" not in done.stdout and world.signals() == []
+    assert listening(world.port), "the board was started"
+
+
+def test_alive_recorded_pid_and_unasked_port_says_could_not_check_and_does_nothing():
+    """The recorded pid is alive (or there is no record) and the hook cannot connect: it concludes nothing from the port, stops nothing and starts nothing."""
+    world = World()
+    pid = world.start_standin("title")
+    done = world.run_hook(**world.injection("EPERM"))
+    assert world.lines(done) == [line_not_checked(world, strerror_of("EPERM"))], done.stdout
+    assert world.signals() == [] and alive(pid) and world.started_servers() == []
+    bare = World()
+    listener = bare.title_only_listener(with_record=False)
+    done = bare.run_hook(**bare.injection("EPERM"))
+    assert bare.lines(done) == [line_not_checked(bare, strerror_of("EPERM"))], done.stdout
+    assert bare.signals() == [] and alive(listener) and bare.started_servers() == []
+
+
+def test_statement_then_unasked_under_lock_signals_nothing():
+    """The two statements must come from two connections. A first `wrong`, then nothing said (a hang, or a connect that fails under the lock) is one
+    statement: no signal."""
+    world = World()
+    world.make_key()
+    pid = world.start_standin("wrong_then_hang")
+    done = world.run_hook()
+    (line,) = world.lines(done)
+    assert line == line_no_answer(world), line
+    assert world.signals() == [] and alive(pid) and world.started_servers() == []
+    asked = [row for row in world.requests.read_text().splitlines() if "/_proof" in row]
+    assert len(asked) == 2, "the proof was asked on two connections: a statement, then none"
+    other = World()
+    other.make_key()
+    held = other.start_standin("wrong")
+    done = other.run_hook(**other.injection("EADDRNOTAVAIL", if_exists=other.board / ".revive.lock"))
+    (line,) = other.lines(done)
+    assert line == line_not_checked(other, strerror_of("EADDRNOTAVAIL")), line
+    assert other.signals() == [] and alive(held)
+
+
+def test_hooks_json_revive_timeout_is_25():
+    """The stop and the start are one path of the hook: a hook killed between them leaves a board down. The path's worst case is about 14 seconds."""
+    data = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
+    found = [hook for group in data["hooks"]["SessionStart"] for hook in group["hooks"] if "revive-board.py" in hook.get("command", "")]
+    assert len(found) == 1 and found[0]["timeout"] == 25, found
+
+
 # ── the edges ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-def test_hang_on_proof_is_silent_and_restarts_own_board():
+def test_hang_on_proof_is_mute_reported_never_signalled():
+    """A server that accepts the connection and never finishes an answer has said nothing: the hook cannot tell a hung board from a slow machine, so it
+    says so once and signals nothing."""
     world = World()
     world.make_key()
     pid = world.start_standin("hang")
@@ -695,19 +1041,20 @@ def test_hang_on_proof_is_silent_and_restarts_own_board():
     done = world.run_hook()
     took = time.time() - started
     (line,) = world.lines(done)
-    assert restarted_line(world, "it does not answer the proof", pid).fullmatch(line), line
-    assert took < 25 and world.signals() == [pid], (took, world.signals())
+    assert line == line_no_answer(world), line
+    assert took < 25 and world.signals() == [] and alive(pid) and world.started_servers() == [], (took, world.signals())
 
 
-def test_redirect_and_large_answer_are_not_proven():
-    for mode in ("redirect", "large"):
+def test_redirect_and_large_answer_are_odd_reported_never_signalled():
+    """An answer no `serve.py` gives (a redirect, a body over 1 kB) is a statement, but not one the hook acts on: it is reported and nothing is stopped."""
+    for mode, reason in (("redirect", "status 302"), ("large", "more than 1 kB")):
         world = World()
         world.make_key()
         pid = world.start_standin(mode)
         done = world.run_hook()
         (line,) = world.lines(done)
-        assert restarted_line(world, "it does not answer the proof", pid).fullmatch(line), (mode, line)
-        assert world.signals() == [pid], mode
+        assert line == line_odd_answer(world, reason), (mode, line)
+        assert world.signals() == [] and alive(pid) and world.started_servers() == [], mode
 
 
 def test_503_twice_then_restart():
@@ -833,17 +1180,18 @@ def test_proof_outcome_kinds():
 
     world = World()
     key = world.make_key()
-    cases = {"title": "old", "page": "old", "nokey": "nokey", "wrong": "wrong", "redirect": "silent", "large": "silent", "hang": "silent"}
+    cases = {"title": "old", "page": "old", "nokey": "nokey", "wrong": "wrong", "redirect": "odd", "large": "odd", "hang": "mute", "reset": "mute"}
     for mode, expected in cases.items():
         pid = world.start_standin(mode, record=False, name=f"po-{mode}")
         started = time.time()
         kind, run = open_board.proof_outcome(key, world.port)
         assert kind == expected and (run is None), (mode, kind, run)
-        assert time.time() - started < 4, f"{mode}: the exchange is 2 seconds in all"
+        assert time.time() - started < 5, f"{mode}: the connect is 1 second at most and the exchange 2"
         os.kill(pid, signal.SIGKILL)
         assert wait_for(lambda: not listening(world.port), 5)
     refused, _ = open_board.proof_outcome(key, world.port)
-    assert refused == "silent", "a refused connection is silent"
+    assert refused == "free", "a refused connection says the port is free; `silent` is retired"
+    assert "silent" not in {kind for kind in cases.values()}
     proven_world = World(shim="normal")
     pkey = proven_world.make_key()
     pid = spawn([sys.executable, str(proven_world.plugin / "status-board" / "serve.py"), "--repo", str(proven_world.project), "--port", str(proven_world.port)], proven_world.env(), proven_world.root / "p.log", proven_world.board)
@@ -924,8 +1272,20 @@ def test_each_line_matches_its_case():
         "R": module.line_still_not_proven("shop-app", "an older version", Path("/b/serve.log")),
         "T": module.line_rate_limited("shop-app", Path("/b/serve.log")),
         "P": module.line_phone_mode("shop-app"),
+        "A": module.line_odd_answer("shop-app", 8800, state, "status 302"),
+        "M": module.line_no_answer("shop-app", 8800, state),
+        "N": module.line_not_checked("shop-app", 8800, "Can't assign requested address"),
+        "D2": module.line_restarted_unchecked("shop-app", "an older version", 4242, 4343),
+        "B": module.line_started_unchecked("shop-app", 4343),
+        "X": module.line_exited("shop-app", 1, Path("/b/serve.log")),
     }
     expected = {
+        "A": 'project-init: status board "shop-app": its server answers the proof in a way this board never does (status 302); nothing was stopped. If it is yours and wrong, stop it (its pid is in /Users/someone/.claude/status-board/servers/8800.json), then start a session here again.',
+        "M": 'project-init: status board "shop-app": port 8800 accepts a connection but gives no answer; nothing was stopped. If the board is hung, stop its server (its pid is in /Users/someone/.claude/status-board/servers/8800.json), then start a session here again.',
+        "N": 'project-init: status board "shop-app" could not be checked: the hook could not connect to port 8800 (Can\'t assign requested address); nothing was stopped or started.',
+        "D2": 'project-init: status board "shop-app" could not prove it is this project\'s board (an older version); stopped its server (pid 4242) and started it again (pid 4343); the hook could not connect to check it yet.',
+        "B": 'project-init: status board "shop-app" was not running; started it again (pid 4343); the hook could not connect to check it yet.',
+        "X": 'project-init: status board "shop-app" was started again but exited at once (code 1); the port may be held by something else; see /b/serve.log.',
         "D": 'project-init: status board "shop-app" could not prove it is this project\'s board (an older version); stopped its server (pid 4242) and started it again: http://localhost:8800/shop-app (by port: http://127.0.0.1:8873)',
         "O": 'project-init: status board "shop-app" not started: port 8873 is held by a program that is not this board\'s server. Nothing was stopped; stop that program, then start a session here again.',
         "U": 'project-init: status board "shop-app": port 8873 answers like a board, but this could not be confirmed as this project\'s own server (F4: that pid does not hold the port). Nothing was stopped. If it is yours, stop it (its pid is in /Users/someone/.claude/status-board/servers/8873.json), then start a session here again.',
@@ -987,6 +1347,20 @@ def test_opener_sentences_promise_only_what_the_hook_does():
     standin = closed.start_standin("title", name="board")
     (line,) = closed.lines(closed.run_hook())
     assert "must be readable by its owner only" in line and closed.signals() == [] and alive(standin)
+    # The promise of a restart is made for the kinds on which the hook restarts (`old`, `nokey`, `wrong`) and for no other: for a connect that failed,
+    # a board that gave no answer and an answer no board gives, the hook stops nothing, so the sentences say what to try and what to do by hand.
+    hook = World().load_hook()
+    assert tuple(open_board.STATEMENTS) == tuple(hook.STATEMENTS) == ("old", "nokey", "wrong")
+    for kind in ("old", "nokey", "wrong"):
+        assert open_board.SENTENCE_FOR_KIND[kind] == not_proven, kind
+    for kind, text in (("unasked", open_board.UNASKED), ("mute", open_board.MUTE), ("odd", open_board.ODD)):
+        assert open_board.SENTENCE_FOR_KIND[kind] == text and text != not_proven, kind
+        assert "\n" not in text and "restart" not in text.lower() and "this project's own" not in text, (kind, text)
+        assert re.search(r"/(?:Users|home|private|tmp|var)/|~", text) is None, "no path of one machine"
+    assert "try" in open_board.UNASKED.lower() and "could not connect" in open_board.UNASKED
+    assert "stop it" in open_board.MUTE and "start a new session" in open_board.MUTE
+    assert "stop its server" in open_board.ODD and "start a new session" in open_board.ODD
+    assert open_board.SENTENCE_FOR_KIND["free"] == open_board.NOT_RUNNING, "a refused connection: the board is not running, and the hook starts it"
 
 
 # ── the stamp and what else lives in a board's folder ─────────────────────────────────────────────────────────────────

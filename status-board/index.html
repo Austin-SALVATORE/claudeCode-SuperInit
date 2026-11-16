@@ -2716,7 +2716,7 @@ const showClosed = why => {
     d.hidden = true
     paint(d.querySelector('summary'), ''); paint(d.querySelector('.body'), '')
   }
-  $('headline').textContent = '…'
+  paint($('headline'), '…')   // through paint(), which remembers what an element holds: the next draw (the board is open again) must not take it for unchanged
   document.title = 'status board'
   $('tick').textContent = 'closed'; $('beacon').classList.add('off')
   paint($('alert'), closedHtml())
