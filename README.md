@@ -10,7 +10,9 @@ Two skills:
   coordinator, the worker roster, the Task title, worktrees, when an
   independent check is required), the verification and release rules,
   the workstream register, and two skills (`task-spec`, the brief for a
-  worker; `milestone-acceptance`).
+  worker; `milestone-acceptance`). Where the `orca-coordinator` plugin is in
+  use, that plugin alone writes the project's worker rules and its register,
+  so the bootstrap leaves those out and writes the rest.
 - **`status-board`** — a local web page per project, built around two
   lists: the questions that need you, and the project's workstreams.
   Status, findings and everything else sit under them, so structured work
@@ -32,10 +34,24 @@ Then, in any project:
 Running `/init` on a repository with no `.claude/rules/operating-model.md`
 triggers the same thing. The scaffold names Orca's commands and
 oh-my-claudecode's agents, so it is for projects run under both; the skill
-checks that first and stops if either is missing. A project that has the
+checks that first and stops if either is missing (with the `orca-coordinator`
+plugin in use, only Orca is required). A project that has the
 older set (made before the Orca-only scaffold) is moved on by
 `/project-bootstrap update`, a step you run: it shows what it would add and
 retire, asks, and leaves every change uncommitted.
+
+**With the `orca-coordinator` plugin in use, it alone writes the worker rules
+and the register.** Before it writes anything, the skill looks for that
+plugin by two signs: it is enabled in `claude plugin list`, or its project
+part `.claude/orca-coordinator/project.md` is in the project and valid as
+that plugin reads it (the register's marker line alone is no sign). When it
+is found, the bootstrap writes `CLAUDE.md`, the verification and release
+rules, the milestone close-out, the board and the decisions part of the
+operating model, and leaves out the register, the worker roster, the start
+command, the Task title, the worktree rule, the independent checks and
+`task-spec`, with one line saying they come from that plugin. Found or not,
+it never overwrites a `docs/workstreams/README.md` that exists: the board
+copies it as it is, all its columns. Alone, nothing changes.
 
 **After an update: start each running board's server again, once.** A board
 made by an earlier version has no `repo.json` (the record, written when the
@@ -71,6 +87,12 @@ so a worktree of a bootstrapped project stays silent even before the
 scaffold is committed on its branch. A bare `.claude/` is not enough:
 Claude Code creates `.claude/settings.local.json` by itself, so testing for
 the directory would count nearly every folder as done.
+
+Where the `orca-coordinator` project part (`.claude/orca-coordinator/project.md`,
+valid as that plugin reads it) is at one of those three places, the offer says
+only what the bootstrap would add and leaves the worker side to that plugin, so
+the first reply does not offer a roster and a register twice. The hook looks
+for that file only: it does not ask `claude plugin list`, which the skill does.
 
 A project that has the older set (`.claude/rules/` with its role file and
 no `operating-model.md`) is not offered the new one. A session there is
@@ -285,7 +307,9 @@ rule is the worktree rule of `operating-model.md`. **One writing worker per
 worktree**: a worker that changes files gets its own
 (`--worktree new-child`), a worker that only reads may share the
 coordinator's, the coordinator merges one branch at a time, and nobody
-reverts another worker's uncommitted work. The hook that used to watch
+reverts another worker's uncommitted work. (Where the `orca-coordinator`
+plugin is in use, `operating-model.md` carries no worktree rule: that plugin's
+rule is the one.) The hook that used to watch
 `Agent`, `Task` and `SendMessage` never saw an Orca dispatch, since a worker
 is started from a shell command; it is gone, and the board's report no
 longer carries its row.
@@ -306,7 +330,8 @@ name, so it does not go stale when a model is renamed. An independent
 check, by a different worker, is required only where a fault is expensive
 and cannot be seen by looking: the path that records your decisions,
 secrets, data, accounts, and before a commit or a release. It never holds
-back your preview. A completion report is checked against the repository
+back your preview. (With the `orca-coordinator` plugin in use, the roster and the
+checks are that plugin's, and the scaffold does not write them.) A completion report is checked against the repository
 before it is believed.
 
 Work is routed by size, in both directions — a one-line fix does not get
@@ -584,7 +609,9 @@ Python 3 for the status board and the session-start hooks. The scaffold
 that `project-bootstrap` writes needs Orca (its `orca` command, or the
 terminal handle it sets) and oh-my-claudecode, whose agents the worker
 roster names; the skill checks both before it writes anything. It writes no
-setting and no environment variable.
+setting and no environment variable. With the `orca-coordinator` plugin in
+use, the scaffold names no oh-my-claudecode agent, so only Orca is required
+and a missing oh-my-claudecode does not stop the bootstrap.
 
 ## Releasing
 
