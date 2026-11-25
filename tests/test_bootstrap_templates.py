@@ -51,6 +51,28 @@ OMC_AGENTS = {
     "tracer", "verifier", "writer",
 }
 TIERS = {"Opus", "Sonnet", "Haiku", "Fable"}
+# Where the orca-coordinator plugin is in use (the owner's ruling of 19 Nov 2026) it alone writes the worker rules and the
+# register, so three of the seven are written from these variants instead; the other four are written as before.
+FOUND_DIR = "with-orca-coordinator"
+FOUND = ("CLAUDE.md", "rules/operating-model.md", "skills/milestone-acceptance/SKILL.md")
+# The seven templates as 2.5.0 shipped them (sha256): alone, nothing changes. Edit a template and this list is the line to update,
+# on purpose: it is the one place that says the alone case was changed.
+ALONE_SHA256 = {
+    "CLAUDE.md": "55c0f70f2a1aa1f51d7a3c6a16e6a4d24b921477bb64ae364b34d8b7677bc2ca",
+    "rules/operating-model.md": "4fc7a10aa5e747fc0a3821b6dd02fe1a7640d843251e05d145712b38a366613d",
+    "rules/verification.md": "26bf4ed192a6e8584a7df99296550a8ce70a1a64d0cf01a1a27951f5f93fca19",
+    "rules/release-choreography.md": "10a1d1c0de253029b69605b50001b89162f98286a8987765c9b0a71d18b61308",
+    "docs/workstreams/README.md": "b2516ab000bfd4d86d086dde2556983a078772865563c7edb283ffa3730d30dc",
+    "skills/task-spec/SKILL.md": "412059f71a18aec756b447a1392e1a62002ec006ff4111b2b03cf0449aff2be5",
+    "skills/milestone-acceptance/SKILL.md": "1af894aea8e9ec4c34cdb57d38e1ebaaa59ed81f065bc13e98b242d16921bf80",
+}
+# What a found-case template must not carry: the worker side (roster, start command, Task title, worktree rule, independent
+# checks, `task-spec`), the register, and the pointer to the owner's global rule file. Words, not the whole of any one rule.
+WORKER_PARTS = re.compile(
+    r"roster|register|task title|task-spec|worker-start|start command|--task-title|--effort|--model|model tier|worktree|"
+    r"independent check|agents\.md|one-line fix|orca orchestration|docs/workstreams|role \| ws-|\| role \|",
+    re.I,
+)
 # The old set: the six bench agents and the files that go with them.
 BENCH = ("architect", "dev", "qa", "claim-verifier", "git-op", "repo-inventory")
 OPERATING_MODEL_SECTIONS = [
@@ -103,9 +125,10 @@ def all_text_of_the_scaffold() -> dict:
 
 # ── step 2: the templates ───────────────────────────────────────────────────────────────────────────────────────────
 def test_templates_are_exactly_the_seven():
-    """Plan section 1, step 2: no bench agent, no team-roles.md, no settings.json, no teammate-brief; the three new files."""
+    """Plan section 1, step 2: no bench agent, no team-roles.md, no settings.json, no teammate-brief; the three new files.
+    Beside them (19 Nov 2026) the three that are written in their place where the orca-coordinator plugin is in use."""
     found = template_files()
-    assert found == sorted(SEVEN), f"templates/ holds {found}, expected {sorted(SEVEN)}"
+    assert found == sorted([*SEVEN, *(f"{FOUND_DIR}/{rel}" for rel in FOUND)]), f"templates/ holds {found}"
 
 
 def test_claude_md_points_only_at_files_that_exist():
@@ -329,7 +352,7 @@ def test_skill_description_and_outline_are_the_orca_ones():
                  "after the scaffold", "start the status board", "update an older set", "finish"):
         assert any(h.startswith(want) or want in h for h in heads), f"no section '{want}': {heads}"
     lines = text.count("\n") + 1
-    assert 110 <= lines <= 175, f"SKILL.md is {lines} lines (the plan: about 150)"
+    assert 110 <= lines <= 260, f"SKILL.md is {lines} lines (the plan: about 150; the found case adds about 80)"
 
 
 def test_skill_update_section_is_a_step_the_owner_runs_and_rewrites_nothing_unasked():
@@ -345,7 +368,172 @@ def test_skill_after_the_scaffold_points_to_global_agents_md_and_the_register():
     body = section(read(SKILL), "After the scaffold")
     for word in ("agents.md", "WS-00", "task-spec", "Task"):
         assert word in body, f"'After the scaffold' lacks {word}"
-    assert body.count("\n") <= 16, "it replaces about 25 lines in 8"
+    alone = body.split("**With orca-coordinator found")[0]  # the note for the found case (19 Nov 2026) comes after the alone text
+    assert alone.count("\n") <= 16, "it replaces about 25 lines in 8"
+
+
+# ── two plugins in one project (the owner's ruling of 19 Nov 2026) ──────────────────────────────────────────────────────
+# Alone, the bootstrap writes what 2.5.0 wrote. With the orca-coordinator plugin found, that plugin alone writes the worker
+# rules and the register, so the bootstrap writes the rest and leaves those out, with one line saying where they come from.
+def found_text(rel: str) -> str:
+    return template_text(f"{FOUND_DIR}/{rel}")
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_alone_the_seven_templates_are_what_2_5_0_shipped():
+    """The owner's condition: in a project with neither sign, the same seven files from the same template text."""
+    import hashlib
+    changed = [rel for rel, want in ALONE_SHA256.items() if hashlib.sha256((TEMPLATES / rel).read_bytes()).hexdigest() != want]
+    assert not changed, f"alone-case templates changed since 2.5.0: {changed}"
+
+
+def test_found_templates_carry_no_worker_part_and_say_where_they_come_from():
+    for rel in FOUND:
+        text = found_text(rel)
+        hits = sorted({m.group(0).lower() for m in WORKER_PARTS.finditer(text)})
+        assert not hits, f"{FOUND_DIR}/{rel} still carries a worker part: {hits}"
+    for rel in ("CLAUDE.md", "rules/operating-model.md"):
+        assert "orca-coordinator" in found_text(rel), f"{FOUND_DIR}/{rel} does not say where the worker parts come from"
+
+
+def test_found_claude_md_is_the_same_file_without_the_worker_side():
+    alone, found = template_text("CLAUDE.md"), found_text("CLAUDE.md")
+    assert found.count("\n") + 1 <= 50, f"{found.count(chr(10)) + 1} lines"
+    assert [h.lower() for h in headings(found)] == [h.lower() for h in headings(alone)], "the same three sections"
+    for title in ("Status", "Definition of done"):  # what every session needs first stays word for word
+        assert section(found, title) == section(alone, title), f"the section '{title}' differs from the alone file"
+    named = set(re.findall(r"`((?:\.claude|docs)/[A-Za-z0-9_./-]+)`", found))
+    shipped = set(SEVEN.values())
+    assert not sorted(p for p in named if p not in shipped and p != ".claude/rules/architecture.md"), f"names files that are not made: {sorted(named)}"
+    for rule in (".claude/rules/operating-model.md", ".claude/rules/verification.md", ".claude/rules/release-choreography.md"):
+        assert rule in named, f"found CLAUDE.md does not point at {rule}"
+    assert "milestone-acceptance" in found, "the close-out skill is still named"
+    how = flat(section(found, "How this project is run"))
+    assert "orca-coordinator" in how and "worker" in how.lower(), f"it says who runs the workers: {how[:300]}"
+
+
+def test_found_operating_model_keeps_decisions_and_says_who_coordinates():
+    alone, found = template_text("rules/operating-model.md"), found_text("rules/operating-model.md")
+    assert [h.lower() for h in headings(found)] == ["the coordinator", "decisions"], headings(found)
+    assert found.count("\n") + 1 <= 30, f"{found.count(chr(10)) + 1} lines: the file is the decisions part and a pointer"
+    assert section(found, "Decisions") == section(alone, "Decisions"), "the decisions part is the same text as alone"
+    coordinator = flat(section(found, "The coordinator"))
+    for phrase in ("orca-coordinator", "which session coordinates", "what the coordinator does itself"):
+        assert phrase in coordinator, f"'The coordinator' lacks '{phrase}': {coordinator}"
+    assert "one-line fix" not in found and "agents.md" not in found, "neither the direct-fix rule nor the pointer to the global rule file"
+    intro = flat(found.split("## The coordinator")[0])
+    assert "orca-coordinator" in intro, f"the one line that says where the worker parts come from: {intro}"
+
+
+def test_found_milestone_acceptance_is_the_same_skill_without_the_roster():
+    alone, found = template_text("skills/milestone-acceptance/SKILL.md"), found_text("skills/milestone-acceptance/SKILL.md")
+    assert found.startswith("---\nname: milestone-acceptance\n"), found[:60]
+    rest = lambda text: text.split("## 2.", 1)[1]  # noqa: E731 - everything after step 1
+    assert rest(found) == rest(alone), "steps 2 to 4 are word for word those of the alone skill"
+    step1 = flat(section(found, "1. Verify"))
+    assert "verifier" in step1 and "worker" in step1 and ".claude/rules/verification.md" in step1, step1
+    assert "orca-coordinator" in step1, f"step 1 says where a worker comes from: {step1}"
+    assert "operating-model" not in step1 and "roster" not in step1.lower(), step1
+
+
+def test_found_variants_have_the_form_of_the_files_they_replace():
+    for rel in FOUND:
+        assert (TEMPLATES / rel).is_file() and (TEMPLATES / FOUND_DIR / rel).is_file()
+        assert found_text(rel) != template_text(rel), f"{rel} is the alone file"
+    # nothing else of the seven is varied: verification, release and the other skills are for every project
+    assert sorted(p.relative_to(TEMPLATES / FOUND_DIR).as_posix() for p in (TEMPLATES / FOUND_DIR).rglob("*") if p.is_file()) == sorted(FOUND)
+
+
+def test_skill_looks_for_orca_coordinator_by_two_signs_before_it_asks_or_writes():
+    text = read(SKILL)
+    heads = [h.lower() for h in headings(text)]
+    before = next(i for i, h in enumerate(heads) if h.startswith("before anything"))
+    ask = next(i for i, h in enumerate(heads) if h.startswith("ask the owner"))
+    detect = next((i for i, h in enumerate(heads) if "orca-coordinator" in h), None)
+    assert detect is not None and detect < before < ask, f"the orca-coordinator section comes before 'Before anything', so that its answer is known when the stop is applied: {heads}"
+    body = section(text, headings(text)[detect])
+    low = " ".join(body.split()).lower()
+    for word in ("claude plugin list", "enabled", ".claude/orca-coordinator/project.md", "register:", "how this project differs",
+                 "never a folder", "not a sign"):
+        assert word in low, f"the detection section lacks '{word}'"
+    assert "marker" in low and "alone" in low, "it says the register's marker line alone is not a sign"
+    for key in ("register", "reviews", "block", "balance.roles", "capability"):
+        assert key in low, f"'valid' does not name the key {key}"
+    for left_out in ("register", "roster", "worker-start", "task title", "worktree", "independent check", "task-spec"):
+        assert left_out in low, f"the list of what is left out lacks '{left_out}'"
+    for written in ("claude.md", "verification", "release", "milestone", "board", "decisions"):
+        assert written in low, f"the list of what is still written lacks '{written}'"
+    assert "orca-coordinator plugin" in low, "one line names where the left-out parts come from"
+    assert "project root" in low or "main checkout" in low, "it says where the project part is looked for"
+
+
+def test_with_orca_coordinator_found_a_missing_oh_my_claudecode_does_not_stop_the_bootstrap():
+    """The stop's own reason is that the scaffold would name agents that do not exist; found, it names no oh-my-claudecode agent.
+    Orca itself is checked in every case, and the alone wording is the one of 2.5.0."""
+    text = read(SKILL)
+    heads = [h.lower() for h in headings(text)]
+    detect = next(i for i, h in enumerate(heads) if "orca-coordinator" in h)
+    before = next(i for i, h in enumerate(heads) if h.startswith("before anything"))
+    assert detect < before, "the orca-coordinator check is known before the oh-my-claudecode stop is applied"
+    body = flat(section(text, "Before anything"))
+    for sentence in ("The scaffold names Orca's commands and oh-my-claudecode's agents. Check:",
+                     "`orca` is on `PATH`, or `ORCA_TERMINAL_HANDLE` is set in this session;",
+                     "oh-my-claudecode is installed: `claude plugin list` shows it. Do not look for a folder: the plugin cache path carries a version.",
+                     "If either is missing, say so to the owner and **stop**: the scaffold would name commands and agents that do not exist there."):
+        assert sentence in body, f"the alone wording of 'Before anything' changed: {sentence!r}"
+    exception = body.split("do not exist there.", 1)[1]
+    assert "orca-coordinator" in exception and "found" in exception.lower(), f"nothing says what changes when it is found: {exception!r}"
+    assert "does not stop" in exception and "oh-my-claudecode" in exception, "a missing oh-my-claudecode does not stop it, found"
+    assert "orca" in exception.lower() and "every case" in exception, "the check for Orca itself stays in every case"
+    requirements = flat(section(read(README), "Requirements"))
+    assert "orca-coordinator" in requirements and "oh-my-claudecode" in requirements, f"README 'Requirements' says the same: {requirements}"
+
+
+def test_skill_says_what_changes_in_each_section_that_names_a_worker_part():
+    text = read(SKILL)
+    for title in ("Ask the owner", "What to create", "After the scaffold", "Start the status board", "Update an older set", "Finish"):
+        assert "orca-coordinator" in section(text, title), f"'{title}' says nothing for the case where orca-coordinator is found"
+    ask = flat(section(text, "Ask the owner")).lower()
+    assert "found" in ask and ("skip" in ask or "leave out" in ask), "the questions on workstreams and the roster are skipped when found"
+    create = flat(section(text, "What to create"))
+    assert f"templates/{FOUND_DIR}/" in create, "the variants are named where the files are listed"
+    assert "never overwrite" in create.lower() and "docs/workstreams/README.md" in create, "an existing register is never overwritten"
+    assert "found or not" in create.lower() or "in every case" in create.lower(), "and that holds whether or not the plugin is found"
+    after = flat(section(text, "After the scaffold")).lower()
+    assert "orca-coordinator" in after and "which session coordinates" in after, "found: it decides which session coordinates"
+    finish = flat(section(text, "Finish")).lower()
+    assert "orca-coordinator" in finish
+
+
+def test_skill_copies_the_register_whole_to_the_board_and_says_what_the_board_shows_without_one():
+    body = flat(section(read(SKILL), "Start the status board"))
+    low = body.lower()
+    for word in ("register:", "docs/workstreams/README.md", "source", "forecast", "details", "whole", "workstreams"):
+        assert word.lower() in low, f"the board section lacks '{word}'"
+    for column in ("ID", "Workstream", "Status", "Next step", "Forecast", "Record"):
+        assert column in body, f"the six columns of orca-coordinator's register are not all named: {column}"
+    assert "no register" in low or "there is no register" in low, "it says what the board shows when there is no register yet"
+    assert "creates none" in low or "create none" in low or "does not create" in low, "the bootstrap creates no register in the found case"
+    assert "never" in low and "write" in low, "and it does not write the board's list from anything but the register"
+
+
+def test_skill_keeps_the_alone_wording_it_had():
+    """The alone case reads as before: these sentences of 2.5.0 are still there, unedited."""
+    text = flat(read(SKILL))
+    for sentence in (
+        "seven files, about 300 lines a session reads at its start.",
+        "which workstreams to open beside `WS-00 Set-up`;",
+        "whether the default roster in `operating-model.md` suits them (a tier per role; they may change a row);",
+        "The session that ran the bootstrap is the coordinator from now on;",
+        "**The next piece of work goes out as an Orca Task with a `task-spec`**, titled `role | WS-id | subject`; not the one after it.",
+        "The discipline of the role is in the owner's global `agents.md`.",
+        "its `workstreams` field is a copy of `docs/workstreams/README.md`.",
+        "start one read-only worker with the Task title convention, then see it on the board's row.",
+    ):
+        assert sentence in text, f"the alone wording is gone: {sentence!r}"
 
 
 # ── step 6: the words ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -377,6 +565,20 @@ def test_readme_offer_section_says_inside_orca_only_and_the_silences():
     for word in ("git", "operating-model.md", "main checkout", "worktree", "worker", "startup", "clear", "update"):
         assert word in low, f"the offer section lacks '{word}'"
     assert "never edits a repository" in low or "does not edit" in low or "never rewrites" in low, "it must say the hook edits nothing"
+
+
+def test_readme_says_what_the_bootstrap_leaves_to_orca_coordinator():
+    text = read(README)
+    top = flat(text.split("## Install")[0])
+    assert "orca-coordinator" in top, "the first list says the bootstrap stands down on the worker parts where that plugin is in use"
+    body = section(text, "At session start", level=2)
+    offer = flat(body[body.index("### The bootstrap is offered"):body.index("### A dead board comes back")])
+    for word in ("orca-coordinator", ".claude/orca-coordinator/project.md", "only what"):
+        assert word in offer, f"the offer section lacks '{word}'"
+    assert "plugin list" in offer and ("not" in offer.lower() or "never" in offer.lower()), "it says the hook looks for the file only"
+    low = flat(text).lower()
+    assert "never overwrit" in low and "docs/workstreams/README.md" in flat(text), "an existing register is never overwritten, found or not"
+    assert "enabled" in low, "the skill's other sign: the plugin enabled in the plugin list"
 
 
 def test_readme_lock_paragraph_is_the_worktree_rule():

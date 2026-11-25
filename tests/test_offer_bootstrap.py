@@ -83,6 +83,9 @@ def setup() -> None:
     exe.write_text(FAKE_ORCA.format(python=sys.executable))
     exe.chmod(0o755)
     (FAKE_BIN / "ps").symlink_to(shutil.which("ps") or "/bin/ps")
+    claude = FAKE_BIN / "claude"  # a stand-in that logs its call: the hook must never ask for the plugin list
+    claude.write_text(f'#!{sys.executable}\nimport os, sys\nopen(os.path.join(os.environ["FAKE_ORCA_DIR"], "claude.log"), "a").write(" ".join(sys.argv[1:]) + "\\n")\n')
+    claude.chmod(0o755)
     live = {"verdict": "live", "observedAt": int(time.time() * 1000)}
     row = {"dispatchId": "ctx_0123456789ab", "taskId": "task_0123456789ab", "runId": "run_0123456789ab",
            "workerState": "ready", "agentTerminalHandle": HANDLE,
@@ -809,6 +812,251 @@ def test_hooks_json_names_the_board_link_lines():
     description = hooks_readme_text("SessionStart", number)
     assert "board-link-offer" in description and "board-link-statusline" in description, description[:200]
     assert entry["hooks"][0]["timeout"] <= 10
+
+
+# ── two plugins in one project (the owner's ruling of 19 Nov 2026) ───
+# With the orca-coordinator plugin's project part in the project, the offer says only what the bootstrap would add. The hook
+# looks for the file and nothing else: it never asks `claude plugin list`. Alone, the offer and the note are what 2.5.0 said.
+PART = Path(".claude") / "orca-coordinator" / "project.md"
+VALID_PART = ("register: docs/workstreams/README.md\nreviews: costly-faults\nblock: block\n\n"
+              "## How this project differs\n\nThe user's own lines.\n")
+
+# What 2.5.0 printed, word for word, with the project's root where it names it (kept here, not read back from the hook).
+ALONE_OFFER = (
+    "<bootstrap-offer>\n"
+    "This project ({root}) has no Orca operating model: no .claude/rules/operating-model.md here or in its main checkout. "
+    "Before other work, offer the owner /project-bootstrap in one or two sentences: it writes a few files on how this project "
+    "is run under Orca (the worker roster, the Task title convention, when an independent check is required, the workstream "
+    "register). Ask what the project is first, and create or change no file until the owner says yes. If they decline, carry "
+    "on and do not raise it again this session.\n"
+    "To stop this offer: an empty .claude/no-bootstrap-offer in this project (only if the owner asks you to), or "
+    "PROJECT_INIT_NO_OFFER=1 everywhere.\n"
+    "</bootstrap-offer>\n"
+)
+OLD_SET_NOTE = (
+    "<bootstrap-update>\n"
+    "This project ({root}) has the older project-bootstrap set (.claude/rules/team-roles.md), written for Claude Code agent "
+    "teams. The plugin now writes an Orca-only set. Tell the owner in one sentence, once, that /project-bootstrap update can "
+    "show what it would add and retire, and that the old set's tree lock no longer runs, so until the update it is one writing "
+    "agent at a time. Do not edit those files yourself.\n"
+    "To stop this note: an empty .claude/no-bootstrap-offer in this project, or PROJECT_INIT_NO_OFFER=1.\n"
+    "</bootstrap-update>\n"
+)
+WORKER_WORDS = ("roster", "register", "Task title", "independent check", "worker-start", "task-spec", "worktree")
+
+
+def put_part(root: Path, text: str = VALID_PART) -> Path:
+    path = root / PART
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def assert_alone(result: Result, repo: Path, label: str) -> None:
+    assert result.code == 0 and not result.err, f"{label}: {said(result)}"
+    assert result.out == ALONE_OFFER.format(root=repo), f"{label}: not the 2.5.0 offer:\n{result.out}"
+
+
+def assert_found(result: Result, repo: Path, label: str) -> None:
+    assert result.code == 0 and not result.err and result.offered and not result.noted, f"{label}: {said(result)}"
+    assert result.out != ALONE_OFFER.format(root=repo), f"{label}: the alone offer, with the project part there"
+    assert result.out.count("<bootstrap-offer>") == 1 and result.out.count("</bootstrap-offer>") == 1, result.out
+    assert f"({repo})" in result.out, f"{label}: the offer names the project's root"
+
+
+def test_the_alone_offer_and_the_old_set_note_are_word_for_word_as_at_2_5_0():
+    repo, old = project("shop-app"), project("notes", "old")
+    assert_alone(run_hook(repo), repo, "no scaffold, no project part")
+    assert_alone(run_hook(repo, source="clear"), repo, "clear")
+    assert run_hook(old).out == OLD_SET_NOTE.format(root=old), run_hook(old).out
+    put_part(old)  # the note is not changed by the project part: it is about the old set
+    assert run_hook(old).out == OLD_SET_NOTE.format(root=old), "the older-set note, with the project part there"
+    child = worktree(project("blog"))
+    assert run_hook(child).out == ALONE_OFFER.format(root=child), "a worktree with no scaffold anywhere"
+
+
+def test_the_offer_with_and_without_the_project_part_at_each_of_the_three_places():
+    """The places the hook already looks for the operating model: the cwd, its git top-level, the main checkout."""
+    # the cwd: a sub-folder holds the part
+    repo = project("shop-app")
+    sub = repo / "pkg"
+    sub.mkdir()
+    assert_alone(run_hook(sub), repo, "cwd, before the part is there")
+    put_part(sub)
+    assert_found(run_hook(sub), repo, "the part at the cwd")
+    # the git top-level: the cwd is a folder below it
+    repo = project("shop-app")
+    deep = repo / "src" / "app"
+    deep.mkdir(parents=True)
+    assert_alone(run_hook(deep), repo, "top, before the part is there")
+    put_part(repo)
+    assert_found(run_hook(deep), repo, "the part at the git top-level")
+    assert_found(run_hook(repo), repo, "the part at the git top-level, from the top")
+    # the main checkout: a worktree whose branch does not carry the part (it is not committed)
+    main = project("shop-app")
+    child = worktree(main)
+    assert_alone(run_hook(child), child, "main checkout, before the part is there")
+    put_part(main)
+    assert not (child / PART).exists(), "the part is only in the main checkout"
+    assert_found(run_hook(child), child, "the part in the main checkout only")
+    # a part that is committed travels into every worktree
+    committed = project("blog")
+    put_part(committed)
+    git(committed, "add", "-A")
+    git(committed, "commit", "-q", "-m", "part")
+    wt = worktree(committed)
+    assert (wt / PART).is_file(), "a committed part is in the worktree"
+    assert_found(run_hook(wt), wt, "a committed part, seen from a worktree")
+
+
+def test_the_found_offer_says_only_what_the_bootstrap_would_add():
+    repo = project("shop-app")
+    put_part(repo)
+    for source in ("startup", "clear"):
+        out = run_hook(repo, source=source).out
+        assert out.startswith("<bootstrap-offer>\n") and out.rstrip().endswith("</bootstrap-offer>"), out
+        for phrase in ("no Orca operating model", ".claude/rules/operating-model.md", "main checkout", "/project-bootstrap", "orca-coordinator",
+                       "verification", "release", "status board", "Ask what the project is first", "no file until",
+                       "do not raise it again this session", ".claude/no-bootstrap-offer", "PROJECT_INIT_NO_OFFER=1"):
+            assert phrase in out, f"{source}: missing {phrase!r} in:\n{out}"
+        for word in WORKER_WORDS:
+            assert word.lower() not in out.lower(), f"{source}: the found offer offers a worker part again ({word!r}):\n{out}"
+    assert len(run_hook(repo).out.splitlines()) <= 5, "the offer stays a short block"
+
+
+def test_an_invalid_or_empty_project_part_is_not_a_sign():
+    """Valid is how orca-coordinator reads the file (hooks/state.sh oc_setting): `key: value` lines before the line
+    `## How this project differs`, one of its own keys with a value it accepts. An empty file, prose, other keys, a value it
+    would ignore, or a line only after the stop line count for nothing."""
+    cases = {
+        "an empty file": "",
+        "blank lines": "\n\n  \n",
+        "prose": "This project is run with another plugin.\nNothing else here.\n",
+        "keys that are not its own": "model: opus\ntool.executor: claude\nformat: 1\n",
+        "a key in another letter case": "Register: docs/workstreams/README.md\n",
+        "an indented key": "  register: docs/workstreams/README.md\n",
+        "an empty value": "register:\nreviews:   \n",
+        "a reviews value it does not know": "reviews: sometimes\n",
+        "a block value it does not know": "block: maybe\n",
+        "a capability value it does not know": "capability.executor: anything\n",
+        "a key after the stop line": "format: 1\n\n## How this project differs\nregister: docs/workstreams/README.md\n",
+        "only the stop line and prose": "## How this project differs\n\nOur words.\n",
+        "a colon in prose, no key": "Note: this is about the project\n",
+    }
+    for label, text in cases.items():
+        repo = project("shop-app")
+        put_part(repo, text)
+        assert_alone(run_hook(repo), repo, label)
+    for label, make in (("a folder in its place", lambda r: (r / PART).mkdir(parents=True)),
+                        ("a file too large to be a project part", lambda r: put_part(r, "register: a.md\n" + "x" * 200_000))):
+        repo = project("shop-app")
+        make(repo)
+        assert_alone(run_hook(repo), repo, label)
+    repo = project("shop-app")  # the folder of the plugin, and no file in it
+    (repo / PART).parent.mkdir(parents=True)
+    (repo / ".claude" / "orca-coordinator" / "roles").mkdir()
+    (repo / ".claude" / "orca-coordinator" / "roles" / "executor.md").write_text("register: docs/workstreams/README.md\n")
+    assert_alone(run_hook(repo), repo, "a role file and no project part")
+
+
+def test_a_valid_project_part_in_each_of_its_forms_is_a_sign():
+    cases = {
+        "the plugin's own template": VALID_PART,
+        "its register line alone": "register: work/register.md\n",
+        "format line first": "format: 1\nregister: work/register.md\n",
+        "reviews alone": "reviews: every-change\n",
+        "block alone": "block: tell\n",
+        "balance alone": "balance.roles: executor, verifier\n",
+        "a capability alone": "capability.qa-tester: trusted\n",
+        "other keys first": "model: opus\nformat: 1\nreviews: costly-faults\n",
+        "windows line ends": "format: 1\r\nblock: block\r\n",
+        "a value with spaces around it": "block:    tell   \n",
+    }
+    for label, text in cases.items():
+        repo = project("shop-app")
+        put_part(repo, text)
+        assert_found(run_hook(repo), repo, label)
+
+
+def test_the_registers_marker_line_alone_is_not_a_sign():
+    repo = project("shop-app")
+    register = repo / "docs" / "workstreams" / "README.md"
+    register.parent.mkdir(parents=True)
+    register.write_text("<!-- orca-coordinator register -->\n# Workstream Register\n\n| ID | Workstream | Status | Next step | Forecast | Record |\n|----|---|---|---|---|---|\n")
+    assert_alone(run_hook(repo), repo, "the marker line in the register")
+    (repo / ".claude" / "orca-coordinator").mkdir(parents=True)
+    assert_alone(run_hook(repo), repo, "and the plugin's folder with no project part")
+    put_part(repo)
+    assert_found(run_hook(repo), repo, "the project part makes it a sign, with or without the register")
+
+
+def test_with_the_project_part_there_every_other_gate_holds_as_before():
+    repo = project("shop-app")
+    put_part(repo)
+    assert_found(run_hook(repo), repo, "the owner's own session")
+    silent = {
+        "resume": run_hook(repo, source="resume"), "compact": run_hook(repo, source="compact"), "fork": run_hook(repo, source="fork"),
+        "outside Orca": run_hook(repo, orca=False), "opt-out variable": run_hook(repo, env={"PROJECT_INIT_NO_OFFER": "1"}),
+        "a worker, by its first prompt": run_hook(repo, transcript=worker_transcript()),
+        "a worker, by a live dispatch": run_hook(repo, orca_mode="live"),
+        "an agent_type": run_hook(repo, payload={"agent_type": "reviewer"}),
+        "a teammate flag": run_hook(repo, ancestor_flags=("--agent-id=a1",)),
+        "claude -p": run_hook(repo, env={"CLAUDE_CODE_SESSION_ATTENDED": "0"}),
+        "the sdk": run_hook(repo, env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}),
+        "not a project": run_hook(TMP),
+    }
+    for label, result in silent.items():
+        assert result.silent, f"{label}: {said(result)}"
+    modeled = project("notes", "new")
+    put_part(modeled)
+    assert run_hook(modeled).silent, "an operating model ends the offer, with the part there too"
+    both = project("blog", "old")
+    put_part(both)
+    assert run_hook(both).out == OLD_SET_NOTE.format(root=both), "the older-set note comes before the found offer"
+    (repo / ".claude").mkdir(exist_ok=True)
+    (repo / ".claude" / "no-bootstrap-offer").write_text("")
+    assert run_hook(repo).silent, "the opt-out file"
+    assert run_hook(worktree(repo)).silent, "the opt-out file, by the main checkout"
+
+
+def test_the_hook_looks_for_the_file_only_and_never_asks_for_the_plugin_list():
+    log = FIXTURES / "claude.log"
+    log.unlink(missing_ok=True)
+    alone, found = project("shop-app"), project("notes")
+    put_part(found)
+    for repo in (alone, found, worktree(found)):
+        run_hook(repo)
+        run_hook(repo, orca_mode="live")
+    assert not log.exists(), f"the hook ran claude: {log.read_text() if log.exists() else ''}"
+    source = HOOK.read_text()
+    assert "plugin list" not in source.replace("`claude plugin list`", ""), "the hook has no call of the plugin list"
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    assert '"claude"' not in code and "'claude'" not in code, "the hook names no claude command"
+
+
+def test_a_project_part_that_is_not_a_plain_file_cannot_hang_the_hook():
+    repo = project("shop-app")
+    (repo / PART).parent.mkdir(parents=True)
+    os.mkfifo(repo / PART)
+    result = run_hook(repo, timeout=8)  # a read of a FIFO blocks: the hook stats the file first
+    assert_alone(result, repo, "a FIFO in place of the project part")
+    assert result.seconds < 3, f"{result.seconds:.1f} s"
+    linked = project("blog")
+    target = TMP / "elsewhere-part.md"
+    target.write_text(VALID_PART)
+    (linked / PART).parent.mkdir(parents=True)
+    (linked / PART).symlink_to(target)
+    assert_found(run_hook(linked), linked, "a link to a plain file is a plain file, as orca-coordinator reads it")
+
+
+def test_the_hooks_readme_says_the_offer_is_smaller_with_the_project_part():
+    config = json.loads((HOOKS_DIR / "hooks.json").read_text())
+    number = next(n for n, g in enumerate(config["hooks"]["SessionStart"]) if "offer-bootstrap.py" in json.dumps(g))
+    text = (HOOKS_DIR / "README.md").read_text()  # the whole section: its last paragraph is the group's own text, pinned by test_hooks_json
+    block = next(b for b in re.split(r"(?m)^## ", text)[1:] if b.split()[0] == f"SessionStart[{number}]")
+    low = " ".join(block.split()).lower()
+    assert "orca-coordinator" in low and ".claude/orca-coordinator/project.md" in low, low[:400]
+    assert "plugin list" in low and ("never" in low or "does not" in low), "it says the hook does not ask the plugin list"
 
 
 # ── runner ───────────────────────────────────────────────────────────

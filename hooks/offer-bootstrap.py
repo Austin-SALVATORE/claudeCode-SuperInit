@@ -49,6 +49,13 @@ Offers when all of these hold:
     variables missing, as in an older Claude Code, the session counts as attended;
   * the project has no operating model (above).
 
+With the orca-coordinator plugin in use, that plugin alone writes a project's worker rules and its register (the owner's ruling
+of 19 Nov 2026), so the bootstrap leaves those out and the offer says only what it would add. The hook's one sign is that
+plugin's project part, `.claude/orca-coordinator/project.md`, valid as that plugin reads it (project_part_valid), found where
+the operating model is looked for. It does not ask `claude plugin list`: this runs at every session start, and the skill, which
+runs once, checks both signs. The register's marker line alone is no sign. The older-set note and every other condition are as
+they were.
+
 A project with the older set only (`.claude/rules/team-roles.md` and no
 operating-model.md) gets a `<bootstrap-update>` note instead of the offer, on the
 same conditions: one sentence to the owner that `/project-bootstrap update` can
@@ -116,6 +123,13 @@ from pathlib import Path
 OPERATING_MODEL = Path(".claude") / "rules" / "operating-model.md"
 OLD_TEAM_ROLES = Path(".claude") / "rules" / "team-roles.md"  # the set written before 2.2.0
 OPT_OUT_FILE = Path(".claude") / "no-bootstrap-offer"
+# The orca-coordinator plugin's project part, and how that plugin reads it (its hooks/state.sh, oc_setting).
+ORCA_COORDINATOR_PART = Path(".claude") / "orca-coordinator" / "project.md"
+PART_STOP = "## How this project differs"  # the part's own keys are read up to this line
+PART_MAX_BYTES = 65536  # a project part is a few lines; a larger file, or one that is not a plain file, is not read
+PART_KEYS = ("register", "reviews", "block", "balance.roles")
+PART_VALUES = {"reviews": ("costly-faults", "every-change"), "block": ("block", "tell")}  # capability.*: steps-only, trusted
+PART_CAPABILITY = ("steps-only", "trusted")
 OPT_OUT_ENV = "PROJECT_INIT_NO_OFFER"
 ORCA_HANDLE_ENV = "ORCA_TERMINAL_HANDLE"  # orca_session.in_orca asks the same variable
 # What Claude Code tells its hooks about a run (measured 15 Nov 2026, Claude Code 2.1.325): `claude -p` had
@@ -275,6 +289,42 @@ def orca_worker(payload: dict) -> bool:
         return False
 
 
+def part_value_ok(key: str, value: str) -> bool:
+    """A value orca-coordinator takes: non-empty, and one of its words for the keys that have a fixed set."""
+    if not value:
+        return False
+    if key.startswith("capability."):
+        return value in PART_CAPABILITY
+    return value in PART_VALUES.get(key, (value,))
+
+
+def project_part_valid(path: Path) -> bool:
+    """True when `path` is a project part that orca-coordinator would read something from: a plain file (stat first: a read of
+    a FIFO blocks) of at most PART_MAX_BYTES, holding, before the line `## How this project differs`, a `key: value` line of one
+    of its own keys (register, reviews, block, balance.roles, capability.<role>) with a value it takes. As it reads: the key is
+    the text before the first colon, with nothing before it, the value is trimmed, and only the first line of a key counts. An
+    empty file, prose, other keys, or a value it would ignore are not a project part. Any error means no."""
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > PART_MAX_BYTES:
+            return False
+        text = path.read_text(errors="replace")
+    except (OSError, ValueError):
+        return False
+    seen: set[str] = set()
+    for line in text.split("\n"):
+        if line.startswith(PART_STOP):
+            return False
+        key, colon, value = line.partition(":")
+        if not colon or not key or key in seen:
+            continue
+        if key in PART_KEYS or key.startswith("capability."):
+            seen.add(key)
+            if part_value_ok(key, value.strip(" \t\r")):
+                return True
+    return False
+
+
 def bootstrap_block(payload: dict, is_agent) -> None:
     """The bootstrap offer and the update note (2.2.0): the first block of this hook."""
     if payload.get("source") not in OFFER_ON or opted_out_by_env():
@@ -314,16 +364,32 @@ def bootstrap_block(payload: dict, is_agent) -> None:
         return
 
     print("<bootstrap-offer>")
-    print(
-        f"This project ({root}) has no Orca operating model: no "
-        ".claude/rules/operating-model.md here or in its main checkout. Before "
-        "other work, offer the owner /project-bootstrap in one or two "
-        "sentences: it writes a few files on how this project is run under "
-        "Orca (the worker roster, the Task title convention, when an "
-        "independent check is required, the workstream register). Ask what the "
-        "project is first, and create or change no file until the owner says "
-        "yes. If they decline, carry on and do not raise it again this session."
-    )
+    if any(project_part_valid(r / ORCA_COORDINATOR_PART) for r in roots):
+        # The orca-coordinator plugin is in use: it keeps the worker side to itself, so the offer says only what is added.
+        print(
+            f"This project ({root}) has no Orca operating model: no "
+            ".claude/rules/operating-model.md here or in its main checkout. The "
+            "orca-coordinator plugin is in use here and keeps the worker side to "
+            "itself: do not offer that. Before other work, offer the owner "
+            "/project-bootstrap in one or two sentences: it writes a few files "
+            "on how this project is checked and released (CLAUDE.md, the "
+            "verification and release rules, the milestone close-out, the "
+            "decisions part of the operating model) and starts the status board. "
+            "Ask what the project is first, and create or change no file until "
+            "the owner says yes. If they decline, carry on and do not raise it "
+            "again this session."
+        )
+    else:
+        print(
+            f"This project ({root}) has no Orca operating model: no "
+            ".claude/rules/operating-model.md here or in its main checkout. Before "
+            "other work, offer the owner /project-bootstrap in one or two "
+            "sentences: it writes a few files on how this project is run under "
+            "Orca (the worker roster, the Task title convention, when an "
+            "independent check is required, the workstream register). Ask what the "
+            "project is first, and create or change no file until the owner says "
+            "yes. If they decline, carry on and do not raise it again this session."
+        )
     print(
         "To stop this offer: an empty .claude/no-bootstrap-offer in this "
         "project (only if the owner asks you to), or PROJECT_INIT_NO_OFFER=1 "
